@@ -1,0 +1,192 @@
+# ============================================================================
+# RESOURCE LIMITS CONFIGURATION
+# ============================================================================
+#
+# PURPOSE:
+#   Prevent resource exhaustion attacks (fork bombs, infinite loops, disk fills)
+#
+# LIMITS ARE APPLIED USING:
+#   - ulimit (for processes)
+#   - Docker constraints (for containers)
+#   - cgroups (for advanced control)
+#
+# ============================================================================
+
+version: "1.0"
+
+# ============================================================================
+# CPU LIMITS
+# ============================================================================
+cpu:
+  # Maximum CPU time per process (seconds)
+  # WHY: Prevents infinite loops from consuming CPU indefinitely
+  max_time: 300  # 5 minutes
+
+  # CPU percentage limit (for Docker/cgroups)
+  # WHY: Prevents single process from monopolizing CPU
+  max_percent: 80  # 80% of one core
+
+  # Number of CPU cores available
+  # WHY: Limits parallel execution capability
+  cpus: 2
+
+  # Message shown when limit is hit
+  message: |
+    ⚠️  CPU time limit reached (300 seconds)
+    Suggestion: Break task into smaller chunks or optimize algorithm
+
+# ============================================================================
+# MEMORY LIMITS
+# ============================================================================
+memory:
+  # Maximum virtual memory (bytes)
+  # WHY: Prevents memory exhaustion attacks
+  max_virtual: 4000000000  # 4GB
+
+  # Maximum resident set size (bytes)
+  # WHY: Limits actual RAM usage
+  max_rss: 2000000000  # 2GB
+
+  # Swap limit (bytes)
+  # WHY: Prevents swap thrashing
+  max_swap: 1000000000  # 1GB
+
+  # Message shown when limit is hit
+  message: |
+    ⚠️  Memory limit reached
+    Suggestion:
+    - Process data in chunks instead of loading all at once
+    - Use generators instead of lists for large datasets
+    - Consider using memory-mapped files
+
+# ============================================================================
+# FILE SYSTEM LIMITS
+# ============================================================================
+filesystem:
+  # Maximum file size (bytes)
+  # WHY: Prevents filling up disk with single large file
+  max_file_size: 1000000000  # 1GB
+
+  # Maximum number of open files
+  # WHY: Prevents file descriptor exhaustion
+  max_open_files: 1024
+
+  # Maximum disk space usage (for project directory)
+  # WHY: Prevents filling up entire disk
+  max_disk_usage: 10000000000  # 10GB
+
+  # Temporary file cleanup
+  # WHY: Prevents /tmp from filling up
+  cleanup_temp: true
+  temp_max_age: 3600  # Delete temp files older than 1 hour
+
+  # Message shown when limit is hit
+  message: |
+    ⚠️  File size limit reached (1GB)
+    Suggestion:
+    - Split large files into smaller chunks
+    - Use streaming instead of writing entire file
+    - Compress data before writing
+
+# ============================================================================
+# PROCESS LIMITS
+# ============================================================================
+processes:
+  # Maximum number of processes
+  # WHY: Prevents fork bombs
+  max_processes: 100
+
+  # Maximum number of threads
+  # WHY: Prevents thread exhaustion
+  max_threads: 200
+
+  # Message shown when limit is hit
+  message: |
+    ⚠️  Process limit reached
+    Suggestion: This might be a fork bomb or runaway process creation
+    - Review code for recursive process creation
+    - Use thread pools instead of creating unlimited threads
+
+# ============================================================================
+# NETWORK LIMITS
+# ============================================================================
+network:
+  # Maximum bandwidth (bytes per second)
+  # WHY: Prevents network saturation
+  max_bandwidth: 10000000  # 10MB/s
+
+  # Maximum number of connections
+  # WHY: Prevents connection exhaustion
+  max_connections: 100
+
+  # Connection timeout (seconds)
+  # WHY: Prevents hanging on unresponsive servers
+  timeout: 30
+
+  # Message shown when limit is hit
+  message: |
+    ⚠️  Network limit reached
+    Suggestion: Implement rate limiting or batch requests
+
+# ============================================================================
+# TIME LIMITS
+# ============================================================================
+time:
+  # Maximum session duration (seconds)
+  # WHY: Prevents runaway sessions
+  max_session: 3600  # 1 hour
+
+  # Idle timeout (seconds)
+  # WHY: Auto-cleanup of inactive sessions
+  idle_timeout: 1800  # 30 minutes
+
+  # Message shown when limit is hit
+  message: |
+    ⚠️  Session time limit reached (1 hour)
+    Suggestion: Session automatically ended for safety
+    - Review completed work
+    - Start new session if more work needed
+
+# ============================================================================
+# DOCKER-SPECIFIC LIMITS (when using Docker isolation)
+# ============================================================================
+docker:
+  # Memory limit
+  memory: "4g"
+
+  # Memory + Swap limit
+  memory_swap: "5g"
+
+  # CPU limit (fraction of a core)
+  cpus: "2.0"
+
+  # PID limit (prevents fork bombs)
+  pids_limit: 100
+
+  # Disk I/O limit
+  blkio_weight: 500  # 0-1000, lower = less priority
+
+  # Network bandwidth limit (requires tc)
+  network_bandwidth: "10m"  # 10 Mbps
+
+# ============================================================================
+# WARNINGS AND THRESHOLDS
+# ============================================================================
+warnings:
+  # Warn when approaching limits (percentage)
+  memory_warning_threshold: 80  # Warn at 80% memory
+  disk_warning_threshold: 80    # Warn at 80% disk
+  cpu_warning_threshold: 80     # Warn at 80% CPU
+
+  # Warning messages
+  memory_warning: |
+    ⚠️  Memory usage at {percent}%
+    Consider optimizing memory usage before hitting limit
+
+  disk_warning: |
+    ⚠️  Disk usage at {percent}%
+    Consider cleaning up temporary files
+
+  cpu_warning: |
+    ⚠️  CPU usage at {percent}%
+    Consider optimizing algorithm or breaking into smaller tasks

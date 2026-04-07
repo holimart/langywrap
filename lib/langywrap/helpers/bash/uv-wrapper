@@ -1,0 +1,5 @@
+#!/bin/bash
+# Wrapper script for /snap/bin/just to work better with Claude Code
+# Pipes output to cat to avoid pager issues
+
+/snap/bin/uv "$@" 2>&1 | cat

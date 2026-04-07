@@ -1,0 +1,41 @@
+FROM ubuntu:22.04
+
+LABEL maintainer="LLM Security Toolkit"
+LABEL description="Isolated sandbox environment for AI agent code execution"
+
+# Install essential tools
+RUN apt-get update && apt-get install -y \
+    git \
+    curl \
+    wget \
+    python3 \
+    python3-pip \
+    nodejs \
+    npm \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create non-root user
+RUN useradd -m -s /bin/bash claude && \
+    echo "claude:claude" | chpasswd
+
+# Set up workspace
+WORKDIR /workspace
+RUN chown -R claude:claude /workspace
+
+# Switch to non-root user
+USER claude
+
+# Install common Python packages
+RUN pip3 install --user --no-cache-dir \
+    requests \
+    beautifulsoup4 \
+    pandas \
+    numpy
+
+# Set environment
+ENV PATH="/home/claude/.local/bin:${PATH}"
+ENV PYTHONUNBUFFERED=1
+
+# Default command
+CMD ["/bin/bash"]

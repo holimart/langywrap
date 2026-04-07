@@ -1,0 +1,41 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/security_hook.sh"
+          }
+        ]
+      }
+    ]
+  },
+  "permissions": {
+    "deny": [
+      "Bash(rm -rf:*)",
+      "Bash(rm -r:*)",
+      "Bash(sudo:*)",
+      "Bash(dd:*)",
+      "Bash(mkfs:*)",
+      "Bash(chmod 777:*)",
+      "Bash(shutdown:*)",
+      "Bash(reboot:*)",
+      "Bash(systemctl:*)",
+      "Bash(mount:*)",
+      "Bash(umount:*)",
+      "Bash(git push --force:*)",
+      "Bash(git push -f:*)",
+      "Bash(curl *pastebin*)",
+      "Bash(curl *transfer.sh*)",
+      "Bash(curl *file.io*)",
+      "Bash(curl *paste.ee*)",
+      "Bash(curl *0x0.st*)",
+      "Bash(curl *ix.io*)",
+      "Bash(wget *pastebin*)",
+      "Bash(wget *transfer.sh*)",
+      "Bash(wget *file.io*)"
+    ]
+  }
+}

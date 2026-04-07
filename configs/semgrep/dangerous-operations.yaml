@@ -1,0 +1,48 @@
+rules:
+  - id: dangerous-system-call
+    patterns:
+      - pattern-either:
+          - pattern: os.system("rm -rf $X")
+          - pattern: subprocess.call(["rm", "-rf", ...])
+          - pattern: subprocess.run(["rm", "-rf", ...])
+    message: "Dangerous recursive delete"
+    severity: ERROR
+    languages: [python]
+
+  - id: dangerous-shell-exec
+    patterns:
+      - pattern-either:
+          - pattern: child_process.exec("rm -rf $X")
+          - pattern: execSync("rm -rf $X")
+    message: "Dangerous shell execution"
+    severity: ERROR
+    languages: [javascript, typescript]
+
+  - id: arbitrary-code-execution
+    patterns:
+      - pattern-either:
+          - pattern: eval($X)
+          - pattern: exec($X)
+    message: "Arbitrary code execution risk"
+    severity: WARNING
+    languages: [python, javascript]
+
+  - id: system-command-injection
+    patterns:
+      - pattern-either:
+          - pattern: os.system($VAR)
+          - pattern: subprocess.call($VAR, shell=True)
+          - pattern: subprocess.run($VAR, shell=True)
+    message: "Potential command injection vulnerability"
+    severity: ERROR
+    languages: [python]
+
+  - id: destructive-file-operations
+    patterns:
+      - pattern-either:
+          - pattern: shutil.rmtree("/")
+          - pattern: shutil.rmtree("~")
+          - pattern: os.remove("/...")
+    message: "Destructive file operation"
+    severity: ERROR
+    languages: [python]

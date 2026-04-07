@@ -1,0 +1,60 @@
+Other gaps found
+
+  Severity: Significant
+  Issue: 2>/dev/null on Layer 3 call suppresses the helpful block messages from intercept-enhanced.py. Should use 2>/dev/tty so the user sees why it was blocked.
+  ────────────────────────────────────────
+  Severity: Significant
+  Issue: interceptor.config_dirs field exists in settings.json but execwrap.bash never passes it to intercept-enhanced.py. The interceptor finds config via its own hardcoded SETTINGS_DIRS. This field is
+    decorative/lying. Either remove it or use SETTINGS_DIR env var if the interceptor supports that. -> please explain more about this
+  ────────────────────────────────────────
+  Severity: Significant
+  Issue: PyYAML check in Phase 9 says "check for PyYAML" but gives no command. Should be: python3 -c "import yaml" 2>/dev/null && echo "OK" || echo "MISSING — install: pip install pyyaml"
+  ────────────────────────────────────────
+  Severity: Minor
+  Issue: rewrite-python-to-uv glob is python * (requires a space) so bare python with no arguments won't be caught. The regex ^python3?\s also requires whitespace. do not allow bare invocations too please and make it not need whitespace
+  ────────────────────────────────────────
+  Severity: Minor
+  Issue: Cline (.clinerules/) missing from Phase 0 harden-wizard artifact checks — it's in the harden-wizard's detection list but not in Phase 0b's status table.
+
+
+
+
+
+
+
+
+
+1) about 
+  "tmux": {
+      "enabled": true,
+      "default_mode": "window",
+      "session_prefix": "execwrap",
+      "_comment": "Run commands in tmux for visibility. Modes: 'window' (new window in shared session), 'session' (own session), 'none' (no tmux). Rules can override with their own 'tmux' field. Named scripts (.sh/.py files) auto-get 'window' unless overridden."
+      
+->make this default none so that only named scripts get their own tmux
+    
+-> Also please make sure the interactions of the prepend and everything else stack, so that if we switch something from python to uv and we have uv to be set to have its tmux then have tmux please
+
+
+2) about
+"debug_info": {
+      "enabled": true,
+      "_comment": "Print a banner before each command showing: PID, log file path, tmux session/window, and the (possibly rewritten) command. Set false to silence."
+    }
+-> improve to also print the file any adhoc script is saved into please
+    
+3) about    
+   "id": "tmux-named-bash-scripts",
+    "description": "Run named .sh scripts in their own tmux window for live observation",
+    "match": {
+      "glob": "bash *.sh",
+      
+-> make this match also other file endings like .bash .zsh etc    
+
+
+4)
+Also make the skill after it sets up everything create tests (again inside .exec directory) by which it would test its functionality and eventually repair if needed. Never make it test unsafe things please though in case they would get executed.
+
+5) Any other improvements? As we can see we are trying to build a system that not only makes everything safer, but gives lots of helper hands in calling tools
+    
+    

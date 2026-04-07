@@ -1,0 +1,312 @@
+# CLAUDE.md - Claude Code Guidance
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+**Instructions**: Fill in each section below to teach Claude Code about your project's conventions, workflows, and requirements. Replace `[INSTRUCTIONS]` blocks with your project-specific information.
+
+## Project Overview
+
+**[INSTRUCTIONS]**: Write 2-3 sentences explaining what your project does, its main purpose, and key components.
+
+Example: "This is a data processing pipeline that ingests data from multiple sources, validates quality, and produces analysis-ready datasets."
+
+[Your project overview here]
+
+## Important Considerations
+
+**No hardcoded absolute paths.** Never use paths like `~/someDir/...`, `/home/user/...`, or `/mnt/...` in code, scripts, or prompt templates. Instead:
+- **Python:** Use `Path(__file__).parent / "filename"` (via `from pathlib import Path`).
+- **Bash:** Derive paths from `${BASH_SOURCE[0]}` or use env vars with defaults (e.g. `${VAR:-$HOME/...}`).
+- **Prompt templates:** Use `$PROJECT_ROOT` placeholder and substitute at build time.
+
+**[INSTRUCTIONS]**: List any critical constraints, warnings, or best practices Claude should know about:
+- External services with rate limits (which ones and limits)
+- Security-sensitive operations
+- Performance bottlenecks to avoid
+- Common mistakes developers make
+
+Example considerations:
+- "Never fetch from external APIs without rate limiting"
+- "Always validate user input at system boundaries"
+- "Use DuckDB for queries on 100K+ rows, not pandas"
+
+[List your important considerations here]
+
+## Command Execution Guidelines
+
+**CRITICAL: When asked to run any command, Claude MUST:**
+
+1. **Prefer justfile commands** - Always check if a `./just` command exists for the task before using raw commands. The justfile wraps common operations with correct flags and paths.
+
+2. **Print verbose instructions** - Before running any command, print a reminder block showing:
+   - What command will be run
+   - What it does
+   - Any relevant flags or options
+
+Example format:
+```
+Running: ./just test
+  Purpose: Run all tests with pytest
+  Equivalent: uv run pytest tests/
+```
+
+**Command preference order:**
+1. `./just <command>` - Always first choice if available
+2. `./uv run <tool>` - For Python tools not in justfile
+3. Raw commands - Only when no justfile/uv alternative exists
+
+**[INSTRUCTIONS]**: Create a table of your most common tasks and their preferred commands.
+
+| Task | Preferred Command | NOT This |
+|------|-------------------|----------|
+| [Your task] | `./just [command]` | [What to avoid] |
+| [Your task] | `./just [command]` | [What to avoid] |
+
+Run `./just` with no arguments to see all available commands.
+
+## Development Commands
+
+**[INSTRUCTIONS]**: Document the main development workflows in your project. Replace examples with your actual justfile recipes.
+
+Use `./just` to run common development commands. Run `./just` to see all available commands.
+
+```bash
+# Workflows (use these after developing functionality)
+./just fix          # Auto-fix lint + format code
+./just validate     # Quick check: lint + typecheck (no tests)
+./just check        # Full check: lint + typecheck + tests
+./just dev          # Full cycle: fix code, then run all checks
+
+# Individual commands
+./just sync         # Install dependencies
+./just test         # Run all tests (quiet: -q --tb=short)
+./just testv        # Run tests verbose
+./just test-file <path>   # Run specific test file
+./just test-fast    # Run fast tests only (excludes @pytest.mark.slow)
+./just test-slow    # Run slow tests only
+./just test-parallel      # Run all tests in parallel
+./just test-fast-parallel # Run fast tests in parallel
+./just lint         # Lint code (quiet: only errors shown)
+./just typecheck    # Type check (compact output)
+./just fmt          # Format code (quiet)
+./just notebook     # Launch Jupyter
+./just clean        # Clean cache files
+```
+
+### Output Filtering (Token Savings)
+
+All dev commands use quiet/compact output modes to save tokens:
+- **pytest**: `-q --tb=short` configured in `pyproject.toml` (~70% reduction)
+- **ruff**: `-q` flag in justfile (~60% reduction)
+- **mypy**: `pretty = false` in `pyproject.toml` (~50% reduction)
+- **pre-commit**: `-q` flag in justfile (~50% reduction)
+
+To get verbose output when debugging, use `./just testv` or run tools directly with `-v`.
+
+## Main Workflows
+
+**[INSTRUCTIONS]**: Describe your project's main execution flows. For pipelines, this might be data ingestion → processing → output. For web apps, this might be development → testing → deployment. For ML projects, this might be data prep → training → evaluation.
+
+### Workflow 1: [Workflow Name]
+
+**[INSTRUCTIONS]**: Explain when this workflow is used and what it accomplishes.
+
+```bash
+./just [command1]    # Step 1: [What this does]
+./just [command2]    # Step 2: [What this does]
+```
+
+**Key points**:
+- [Important detail 1]
+- [Important detail 2]
+
+### Workflow 2: [Workflow Name]
+
+[Repeat the above for other workflows]
+
+## Configuration
+
+**[INSTRUCTIONS]**: Document any environment variables, config files, or settings users need to know about.
+
+The project uses environment variables for configuration, loaded from `.env` file.
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `[VAR_NAME]` | - | [What it controls] |
+| `[VAR_NAME]` | `[value]` | [What it controls] |
+
+### Example `.env`
+
+```bash
+# [Category of settings]
+[VAR_NAME]=[value]
+[VAR_NAME]=[value]
+
+# [Another category]
+[VAR_NAME]=[value]
+```
+
+## Code Organization & Best Practices
+
+**[INSTRUCTIONS]**: Document your project's code structure conventions.
+
+### Package Organization
+
+**[INSTRUCTIONS]**: Explain your package structure.
+
+Example:
+```
+myproject/
+├── core/           # Core business logic
+├── utils/          # Shared utilities
+└── __init__.py
+```
+
+[Your package structure and conventions]
+
+### Shared Utilities
+
+**[INSTRUCTIONS]**: Document utility modules developers should use instead of reinventing code.
+
+- **`myproject.utils.dates`**: Date parsing and formatting utilities
+- **`myproject.utils.io`**: File I/O operations
+- **[Other utilities]**: [What they provide]
+
+When writing code, prefer existing utilities over implementing similar functionality from scratch.
+
+## Testing Requirements
+
+**[INSTRUCTIONS]**: Explain your testing approach and coverage expectations.
+
+All components should have unit tests. When creating new code:
+
+```bash
+./just test              # Run all tests
+./just test-file <path>  # Run specific test file
+```
+
+**Coverage expectations**:
+- [Your coverage targets, e.g., "80% line coverage for new code"]
+- [Any critical paths that must have tests]
+
+## Technology Stack
+
+**[INSTRUCTIONS]**: List the main technologies, languages, and frameworks in use.
+
+- **Language**: [Python/Node.js/Rust/etc]
+- **Testing**: [pytest/jest/vitest/etc]
+- **Linting**: [ruff/eslint/clippy/etc]
+- **Type Checking**: [mypy/pyright/typescript/etc]
+- **Build/Package**: [uv/pip/npm/cargo/etc]
+- **Task Runner**: [justfile/makefile/npm scripts/etc]
+
+## Claude Code Skills
+
+**[INSTRUCTIONS]**: List any custom `/slash` commands available in this project. Format as skill name and brief description.
+
+Custom slash commands for common workflows:
+
+| Command | Description |
+|---------|-------------|
+| `/validate-fix` | Run all checks, fix errors, analyze code patterns, propose tests |
+| `/spec-driven` | Spec-driven development with EARS acceptance criteria |
+| `/setup-output-filtering` | Auto-configure quiet output for dev tools (token savings) |
+| `/ralph-loop` | Autonomous ML experimentation loop with tree-search |
+| `/harden-wizard` | Interactive security hardening wizard (uses execsec submodule) |
+| `/analyze-intents` | Analyze user intent patterns from conversation history |
+| `/dataframe-alternatives` | Suggest faster DataFrame alternatives (Polars, DuckDB) |
+| `/export-inputs` | Export conversation inputs to markdown for backup |
+| `/compound-engineering` | Scaffold compound engineering system into a repo (run once) |
+| `/compound before` | Pre-task: surface past lessons, process docs, recurring patterns to avoid repeating mistakes |
+| `/compound` | Post-task: capture lessons, document processes, detect patterns, propose systemic fixes |
+
+**[INSTRUCTIONS]**: Add your project-specific skills below and remove any that don't apply.
+
+Example usage:
+```
+/validate-fix quick
+/ralph-loop setup
+/harden-wizard .
+```
+
+See `.claude/commands/` for implementations.
+
+## Common Patterns & Anti-Patterns
+
+**[INSTRUCTIONS]**: Document code patterns that are encouraged or discouraged in this project.
+
+### Good Patterns ✅
+
+**[Pattern Name]**: [Explanation and example]
+```python
+# Good example
+[code here]
+```
+
+### Anti-Patterns to Avoid ❌
+
+**[Pattern Name]**: [Why it's bad and what to do instead]
+```python
+# Bad example
+[code here]
+
+# Good alternative
+[code here]
+```
+
+## Performance Considerations
+
+**[INSTRUCTIONS]**: Document any performance-critical sections and optimization guidelines.
+
+### Critical Performance Paths
+
+- **[Component]**: [Why it matters and optimization tips]
+- **[Component]**: [Why it matters and optimization tips]
+
+### Performance Testing
+
+```bash
+./just [perf-test-command]    # Run performance benchmarks
+```
+
+## Debugging & Troubleshooting
+
+**[INSTRUCTIONS]**: Provide guidance on common issues and how to debug them.
+
+### Common Issues
+
+**Issue**: [Description]
+- **Cause**: [Why it happens]
+- **Solution**: [How to fix it]
+- **Debug command**: `[command to investigate]`
+
+### Debugging Techniques
+
+- **[Technique]**: [When and how to use it]
+- **[Technique]**: [When and how to use it]
+
+## Documentation References
+
+**[INSTRUCTIONS]**: Link to additional project documentation.
+
+- **[docs/filename.md](docs/filename.md)** - [Brief description of what's in this file]
+- **[DESIGN_PRINCIPLES.md](DESIGN_PRINCIPLES.md)** - Architectural principles and acceptance criteria
+- **[ARCHITECTURE.md](ARCHITECTURE.md)** - Detailed system architecture
+- **[execsec/](execsec/)** - Security hardening submodule (git submodule, upstream: Darthholi/execsec)
+
+## Conversation Backup Workflow
+
+Before clearing conversation history (to free up context), backup your inputs:
+
+```bash
+# 1. Export all your inputs to markdown
+/export-inputs
+
+# 2. The backup is saved to notes/user_inputs_backup_YYYYMMDD_HHMMSS.md
+
+# 3. Now safe to clear conversations
+```
+
+This preserves your feature requests, decisions, and debugging sessions for future reference.

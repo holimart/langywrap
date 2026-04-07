@@ -1,0 +1,8 @@
+{
+  "hooks": {
+    "beforeShellExecution": {
+      "command": ".cursor/hooks/guard.sh",
+      "description": "Security guard: blocks dangerous commands and data exfiltration"
+    }
+  }
+}

@@ -1,0 +1,57 @@
+# Logs
+*.log
+.claude-*.log
+.dns-monitor.log
+.claude-intercept.log
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Temporary files
+*.tmp
+*.bak
+.pid
+
+# Sensitive data
+.env
+.env.*
+credentials*
+secrets*
+*_key
+*.pem
+*.key
+
+# Build artifacts
+dist/
+build/
+*.egg-info/
+
+# Docker
+*.tar
+docker-compose.override.yml
+
+# Test outputs
+test-results/
+coverage/
+
+# Local configs
+local-config.yaml
+*.local.json

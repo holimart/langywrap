@@ -1,0 +1,113 @@
+#!/usr/bin/env bash
+# Pre-commit hook: scan staged Python files for dangerous patterns
+# Blocks on ERROR patterns, warns on WARNING patterns
+# Works with ALL AI coding tools (universal git hook)
+
+set -euo pipefail
+
+# Get staged Python files
+STAGED_FILES=$(git diff --cached --name-only --diff-filter=ACM -- '*.py' || true)
+if [[ -z "$STAGED_FILES" ]]; then
+    exit 0
+fi
+
+ERRORS=0
+WARNINGS=0
+
+# Known-safe locations (file_regex:content_regex pairs to skip)
+ALLOWLIST=(
+    # Add entries like: "path/to/file:pattern_to_skip"
+)
+
+is_allowlisted() {
+    local file="$1"
+    local line_content="$2"
+    for entry in "${ALLOWLIST[@]}"; do
+        local pattern_file="${entry%%:*}"
+        local pattern_content="${entry##*:}"
+        if echo "$file" | grep -qE "$pattern_file" && echo "$line_content" | grep -qE "$pattern_content"; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+check_pattern() {
+    local level="$1"    # ERROR or WARNING
+    local pattern="$2"
+    local message="$3"
+    local file="$4"
+
+    while IFS=: read -r lineno content; do
+        [[ -z "$lineno" ]] && continue
+
+        # Skip comments
+        if echo "$content" | grep -qE '^\s*#'; then
+            continue
+        fi
+
+        # Skip docstrings
+        if echo "$content" | grep -qE '^\s*("""|'"'"''"'"''"'"')'; then
+            continue
+        fi
+
+        # Check allowlist
+        if is_allowlisted "$file" "$content"; then
+            continue
+        fi
+
+        echo "  $level: $file:$lineno - $message"
+        echo "    > $(echo "$content" | sed 's/^[[:space:]]*//')"
+
+        if [[ "$level" == "ERROR" ]]; then
+            ERRORS=$((ERRORS + 1))
+        else
+            WARNINGS=$((WARNINGS + 1))
+        fi
+    done < <(git show ":$file" | grep -n "$pattern" 2>/dev/null || true)
+}
+
+echo "Security scan: checking $(echo "$STAGED_FILES" | wc -w) staged Python file(s)..."
+echo ""
+
+for file in $STAGED_FILES; do
+    # ERROR-level patterns (block commit)
+    check_pattern "ERROR" 'os\.system(' \
+        "os.system() is unsafe - use subprocess.run() without shell=True" "$file"
+
+    check_pattern "ERROR" 'shell=True' \
+        "subprocess with shell=True is vulnerable to command injection" "$file"
+
+    check_pattern "ERROR" '\beval(' \
+        "eval() can execute arbitrary code" "$file"
+
+    check_pattern "ERROR" '\bexec(' \
+        "exec() can execute arbitrary code" "$file"
+
+    check_pattern "ERROR" 'shutil\.rmtree.*["\x27]/["\x27]' \
+        "shutil.rmtree('/') would delete entire filesystem" "$file"
+
+    check_pattern "ERROR" "chmod.*777" \
+        "chmod 777 creates world-writable files" "$file"
+
+    # WARNING-level patterns (report but don't block)
+    check_pattern "WARNING" 'pickle\.load' \
+        "pickle.load() can execute arbitrary code from untrusted data" "$file"
+
+    check_pattern "WARNING" '__import__(' \
+        "Dynamic imports can be used for code injection" "$file"
+done
+
+echo ""
+if [[ $ERRORS -gt 0 ]]; then
+    echo "FAILED: $ERRORS error(s), $WARNINGS warning(s) found."
+    echo "Fix ERROR-level issues before committing."
+    echo "If a finding is a false positive, add it to the ALLOWLIST in .githooks/pre-commit"
+    exit 1
+elif [[ $WARNINGS -gt 0 ]]; then
+    echo "PASSED with $WARNINGS warning(s). Review before pushing."
+    exit 0
+else
+    echo "PASSED: No security issues found."
+    exit 0
+fi

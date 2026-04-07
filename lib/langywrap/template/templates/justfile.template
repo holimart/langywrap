@@ -1,0 +1,287 @@
+# Justfile Template - Task Automation for [PROJECT_NAME]
+#
+# [INSTRUCTIONS]: Replace [PROJECT_NAME] with your project name. This file uses the 'just' command runner.
+# Run `just` to see all available commands. See: https://github.com/casey/just
+#
+# [INSTRUCTIONS]: Organize commands into logical sections using comment headers (# ===== SECTION NAME =====).
+# Each command should have a help comment explaining what it does.
+
+# Load environment variables from .env file
+set dotenv-load := true
+
+# Default command: show all available commands
+default:
+    @just --list
+
+# ============================================================================
+# [INSTRUCTIONS]: SETUP SECTION - Dependency and configuration initialization
+# ============================================================================
+
+# [INSTRUCTIONS]: Create an 'install dependencies' command
+# Example: sync, install, setup, init, etc.
+sync:
+    ./uv sync
+
+# [INSTRUCTIONS]: Create an 'add dependency' command if using package manager
+# Example: add package, add package --dev, etc.
+add package:
+    ./uv add {{package}}
+
+# ============================================================================
+# [INSTRUCTIONS]: RUNNING/EXECUTION SECTION - Main application operations
+# ============================================================================
+
+# [INSTRUCTIONS]: Add commands to run your main application
+# Examples:
+# - For web apps: run, start, serve, dev-server
+# - For CLI tools: run, execute, process
+# - For scripts: run, cli
+# Replace with your actual commands
+
+# Run main application
+run:
+    ./uv run python main.py
+
+# Launch development server (if applicable)
+dev-server:
+    ./uv run python -m [module_name]
+
+# Launch Jupyter notebook (if using Python data science)
+notebook:
+    ./uv run jupyter notebook
+
+# ============================================================================
+# [INSTRUCTIONS]: TESTING SECTION - Test execution in various modes
+# ============================================================================
+
+# [INSTRUCTIONS]: Create test running commands with different options:
+# - test (all tests)
+# - test-file <path> (specific file)
+# - test-match <pattern> (by name pattern)
+# - test-parallel (for speed)
+# - test-fast (fast only)
+# Customize based on your test framework (pytest, jest, vitest, etc.)
+
+# Run all tests
+test:
+    ./uv run pytest
+
+# Run tests with verbose output
+testv:
+    ./uv run pytest -v
+
+# Run a specific test file
+test-file file:
+    ./uv run pytest -v {{file}}
+
+# Run tests matching a pattern
+test-match pattern:
+    ./uv run pytest -k {{pattern}}
+
+# Run tests in parallel (requires pytest-xdist or equivalent)
+test-parallel:
+    ./uv run pytest -n auto
+
+# [INSTRUCTIONS]: Add test markers if using them (e.g., unit vs integration tests)
+# Run fast tests only (excludes slow tests)
+test-fast:
+    ./uv run pytest -m "not slow"
+
+# Run slow tests only
+test-slow:
+    ./uv run pytest -m "slow"
+
+# ============================================================================
+# [INSTRUCTIONS]: CODE QUALITY SECTION - Linting, formatting, type checking
+# ============================================================================
+
+# [INSTRUCTIONS]: Create commands for your code quality tools:
+# Common patterns:
+# - Linting: ruff, eslint, clippy, flake8, etc.
+# - Formatting: ruff, prettier, black, etc.
+# - Type checking: mypy, pyright, typescript, etc.
+# Each tool may have "check only" and "auto-fix" versions
+
+# Lint code (check only, no changes)
+lint:
+    ./uv run ruff check .
+
+# Lint and automatically fix issues
+lint-fix:
+    ./uv run ruff check --fix .
+
+# Format code (auto-fixes style)
+fmt:
+    ./uv run ruff format .
+
+# Type checking
+typecheck:
+    ./uv run mypy --config-file=pyproject.toml .
+
+# ============================================================================
+# [INSTRUCTIONS]: COMPOSITE WORKFLOWS - Combined operations for common tasks
+# ============================================================================
+
+# [INSTRUCTIONS]: Create composite commands that chain together related operations.
+# These are the commands developers will use most frequently. Make them simple
+# and clear with descriptive names.
+#
+# Common patterns:
+# - fix: auto-fix lint + format
+# - validate: lint + typecheck (no tests, quick)
+# - check: lint + typecheck + tests (full validation)
+# - dev: fix + check (full cycle)
+
+# Fix code style: auto-fix lint issues + format (no changes to logic)
+fix: lint-fix fmt
+
+# Validate code: lint + type check (no tests, ~10 seconds)
+validate: lint typecheck
+
+# Full check: lint + typecheck + all tests (complete validation)
+check: lint typecheck test
+
+# Development cycle: fix code style, then run all validations
+dev: fix check
+
+# ============================================================================
+# [INSTRUCTIONS]: DOCUMENTATION SECTION (Optional)
+# ============================================================================
+
+# [INSTRUCTIONS]: If your project has documentation tools, add commands here
+# Examples: docs, docs-build, docs-serve, sphinx-build, mkdocs serve, etc.
+
+# Build documentation (if applicable)
+docs:
+    ./uv run sphinx-build -b html docs/ docs/_build/
+
+# Serve documentation locally
+docs-serve:
+    ./uv run python -m http.server --directory docs/_build/ 8000
+
+# ============================================================================
+# [INSTRUCTIONS]: CLEANING/MAINTENANCE SECTION (Optional)
+# ============================================================================
+
+# [INSTRUCTIONS]: Add commands to clean up build artifacts, caches, etc.
+# Examples: clean, clean-cache, clean-build, clean-all, etc.
+
+# Clean cache files and build artifacts
+clean:
+    rm -rf __pycache__ .pytest_cache .mypy_cache .ruff_cache
+    find . -type d -name "*.egg-info" -exec rm -rf {} +
+    find . -type f -name "*.pyc" -delete
+
+# ============================================================================
+# [INSTRUCTIONS]: PROJECT-SPECIFIC SECTION - Custom operations for your workflow
+# ============================================================================
+
+# [INSTRUCTIONS]: Add any project-specific commands here. Examples:
+# - Data pipeline: scrape, ingest, transform, build-layers
+# - Web app: migrate, seed-db, generate-api
+# - ML project: train, evaluate, predict, tune-hyperparameters
+# - CLI tool: build, package, publish
+
+# [INSTRUCTIONS]: Example for data pipeline project:
+# Scrape data from sources
+# orchestrate:
+#     ./uv run python -m project.scrapers.orchestrator
+
+# [INSTRUCTIONS]: Example for web app:
+# Run database migrations
+# migrate:
+#     ./uv run alembic upgrade head
+
+# [INSTRUCTIONS]: Example for ML project:
+# Train the model
+# train:
+#     ./uv run python scripts/train.py
+
+# ============================================================================
+# [INSTRUCTIONS]: BUILD/PACKAGE SECTION (Optional)
+# ============================================================================
+
+# [INSTRUCTIONS]: If your project needs to be built or packaged, add commands here
+# Examples: build, package, publish, release, etc.
+
+# Build distribution packages (if applicable)
+build:
+    ./uv build
+
+# Publish to repository (if applicable)
+publish:
+    ./uv publish
+
+# ============================================================================
+# [INSTRUCTIONS]: DEPLOYMENT SECTION (Optional)
+# ============================================================================
+
+# [INSTRUCTIONS]: If your project is deployed, add commands here
+# Examples: deploy, deploy-dev, deploy-prod, rollback, etc.
+
+# Deploy to production (if applicable)
+deploy:
+    @echo "Replace this with your deployment script"
+    @echo "./uv run python scripts/deploy.py --env production"
+
+# ============================================================================
+# NOTES FOR CUSTOM COMMANDS
+# ============================================================================
+#
+# [INSTRUCTIONS]: Follow these guidelines when adding custom commands:
+#
+# 1. NAMING:
+#    - Use clear, verb-first names: verb-object format
+#    - Good: test-file, lint-fix, docs-build
+#    - Bad: fix_all, run-tests-faster
+#
+# 2. HELP TEXT:
+#    - First line of comment is the help text (shown in `just --list`)
+#    - Keep it concise (< 60 characters)
+#    - Explain what it does and when to use it
+#
+# 3. VARIABLE PARAMETERS:
+#    - Use {{variable}} for parameters
+#    - Example: test-file file:  ./uv run pytest {{file}}
+#    - The user runs: just test-file tests/test_foo.py
+#
+# 4. COMMAND CHAINING:
+#    - Use `command1: command2 command3` to run multiple commands in sequence
+#    - Stops on first error by default
+#    - Use `|| true` to ignore errors: `./failing-command || true`
+#
+# 5. SHELL OUTPUT:
+#    - Use `@` prefix to hide the command being run
+#    - Example: @echo "Building..." instead of echo "Building..."
+#    - Improves readability of output
+#
+# 6. CONDITIONAL LOGIC:
+#    - Use shell scripts for complex logic
+#    - Example: if [ -f config.local ]; then ... ; fi
+#    - Keep simple logic in just, complex logic in separate scripts
+#
+# EXAMPLES:
+#
+# # Simple command
+# build:
+#     cargo build
+#
+# # Command with output suppression
+# clean:
+#     @rm -rf target/
+#     @echo "Cleaned build artifacts"
+#
+# # Command with parameter
+# run-test file:
+#     ./uv run pytest {{file}}
+#
+# # Chained commands
+# dev: fmt lint test
+#
+# # Conditional execution
+# debug-mode:
+#     @if [ "{{DEBUG}}" = "1" ]; then \
+#         ./uv run python -m pdb main.py; \
+#     else \
+#         echo "Set DEBUG=1 to run in debug mode"; \
+#     fi

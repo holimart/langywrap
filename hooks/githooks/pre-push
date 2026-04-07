@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Pre-push hook: block force pushes and protect main branches
+# Works with ALL AI coding tools (universal git hook)
+
+set -euo pipefail
+
+# Protected branches (add more as needed)
+PROTECTED_BRANCHES="main master"
+
+# Read push info from stdin (provided by git)
+while read -r local_ref local_sha remote_ref remote_sha; do
+    # Extract branch name from ref
+    remote_branch="${remote_ref#refs/heads/}"
+
+    # Check for force push by looking at git push arguments
+    # Git sets GIT_PUSH_OPTION_COUNT for push options, but force push
+    # is detected by checking if the push would be non-fast-forward
+    if [[ "$remote_sha" != "0000000000000000000000000000000000000000" ]] && \
+       [[ "$local_sha" != "0000000000000000000000000000000000000000" ]]; then
+        # Check if this is a non-fast-forward push
+        if ! git merge-base --is-ancestor "$remote_sha" "$local_sha" 2>/dev/null; then
+            for protected in $PROTECTED_BRANCHES; do
+                if [[ "$remote_branch" == "$protected" ]]; then
+                    echo "BLOCKED: Non-fast-forward push to protected branch '$protected'."
+                    echo "Reason: This would rewrite history on a shared branch."
+                    echo "Suggestion: Use 'git pull --rebase' first, then push normally."
+                    exit 1
+                fi
+            done
+            echo "WARNING: Non-fast-forward push to '$remote_branch'."
+            echo "This will rewrite remote history. Proceed with caution."
+        fi
+    fi
+done
+
+exit 0

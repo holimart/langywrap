@@ -1,0 +1,337 @@
+{
+  "_comment": "ExecWrap unified configuration v1. All wrapper behavior is controlled here. See .exec/README.md for full docs.",
+  "version": 1,
+  "meta": {
+    "tool": "claude-code",
+    "repo": "llmtemplate",
+    "created_by": "execwrap-setup skill",
+    "execsec_present": true
+  },
+
+  "features": {
+    "_comment": "Master feature toggles. Set 'enabled: false' to disable a feature globally. Individual rules can override tmux and log behavior.",
+
+    "env_loading": {
+      "enabled": true,
+      "env_file": ".env",
+      "_comment": "Load .env before every command. AI tools often skip this. Set enabled:false if you manage env another way."
+    },
+
+    "adhoc_saving": {
+      "enabled": true,
+      "dir": "scripts/adhoc",
+      "_comment": "Capture inline scripts (bash -c '...', python -c '...', heredocs) into scripts/adhoc/ for later analysis and reuse. Files named <timestamp>_<pid>.<ext>. The path is printed in the debug banner."
+    },
+
+    "logging": {
+      "enabled": true,
+      "dir": ".log",
+      "_comment": "Tee all command stdout+stderr to .log/<timestamp>_<pid>_<cmd>.log. Useful for reviewing what the AI tool did."
+    },
+
+    "tmux": {
+      "enabled": true,
+      "default_mode": "none",
+      "session_prefix": "execwrap",
+      "_comment": "Run commands in tmux for visibility. default_mode 'none' means tmux is OFF by default — only rules with an explicit 'tmux' field trigger it. Modes: 'window' (new window in shared session), 'session' (own session), 'none' (no tmux). Rules can override with their own 'tmux' field."
+    },
+
+    "hooks": {
+      "enabled": true,
+      "auto_detect": true,
+      "dirs": [".claude/hooks", ".git/hooks"],
+      "_comment": "Search these dirs for pre-bash/pre-command hooks and call them before execution. Hooks receive the command as $1. harden-wizard installs hooks here automatically."
+    },
+
+    "hardening": {
+      "_comment": "Multi-layer execsec hardening. Layer 1 (rules[] below) always runs. Layer 2 requires harden-wizard --with-wrapper. Layer 3 requires execsec submodule and python3+PyYAML.",
+
+      "enabled": true,
+
+      "guard": {
+        "enabled": true,
+        "path": ".llmsec/guard.sh",
+        "_comment": "Layer 2: execsec guard.sh — ACTIVE: installed by harden-wizard --with-wrapper. guard.sh is the check-only validator (exits 0/1, does NOT execute). guard-exec.sh alongside it is the shell replacement for direct AI tool use without execwrap."
+      },
+
+      "interceptor": {
+        "enabled": true,
+        "path": "execsec/tools/interceptors/intercept-enhanced.py",
+        "_comment": "Layer 3: intercept-enhanced.py — 57-rule YAML set covering: destructive ops, privilege escalation, system control, secret files, package management (npm/pip/yarn ask), git ops (reset --hard ask), editors (allow with logging). Requires python3 and PyYAML (pip install pyyaml). Config discovery is HARDCODED inside the interceptor — it searches (in order): .settings/permissions.yaml, .claude/permissions.yaml, .opencode/permissions.yaml, ~/.llmsec/defaults/permissions.yaml, execsec/configs/defaults/permissions.yaml. To add project-specific rules, create .settings/permissions.yaml."
+      }
+    },
+
+    "rtk": {
+      "enabled": true,
+      "path": ".exec/rtk",
+      "_comment": "RTK output compression — rewrites commands through RTK for 60-90% token savings. Uses 'rtk rewrite' which handles pipes, compounds, redirects, and heredocs safely. Falls back to .exec/rtk, then PATH. Runs AFTER security layers, BEFORE execution. Disable with enabled:false or remove the rtk binary."
+    },
+
+    "local_priority": {
+      "enabled": true,
+      "binaries": ["just", "uv", "python", "python3", "node", "npm", "npx", "pytest", "ruff", "mypy"],
+      "_comment": "For each listed binary, check if ./<binary> exists in project root and prefer it. Applied BEFORE rule matching AND re-applied AFTER each rewrite. This ensures rewrite chains stack correctly: python → uv run python → ./uv run python (./uv exists in this repo). This repo has ./just and ./uv wrappers that pipe output through cat to avoid pager issues with AI tools."
+    },
+
+    "debug_info": {
+      "enabled": true,
+      "_comment": "Print a banner before each command showing: PID, log file path, tmux session/window, the (possibly rewritten) command, and the adhoc script file if one was saved. Set false to silence."
+    }
+  },
+
+  "rules": [
+    {
+      "id": "rewrite-python-to-uv",
+      "description": "Rewrite any python/python3 invocation (bare or full path) to 'uv run python'",
+      "match": {
+        "glob": "python",
+        "regex": "^(.+/)?python3?(\\s|$)",
+        "_comment": "Matches bare 'python'/'python3' AND any path-prefixed invocation: ./.venv/bin/python, /usr/bin/python3, etc. The glob catches the exact bare word for the case-match path. Regex (\\s|$) matches both 'python script.py' and bare 'python' with no args."
+      },
+      "action": "rewrite",
+      "rewrite": {
+        "replace_binary": "uv run python",
+        "_comment": "replace_binary strips the first word (regardless of path prefix) and substitutes 'uv run python', keeping all args. Examples: 'python script.py' → 'uv run python script.py'; './.venv/bin/python3 -c ...' → 'uv run python -c ...'. After rewrite, local_priority re-applies: 'uv' → './uv'. The full chain stacks."
+      },
+      "tmux": null,
+      "enabled": true,
+      "_comment": "uv detected (./uv wrapper present). After rewrite+re-priority: './uv run python script.py'. A tmux-uv-run-python-scripts rule below then fires if enabled."
+    },
+
+    {
+      "id": "rewrite-pip-to-uv-pip",
+      "description": "Redirect pip install to uv pip install — faster and lockfile-aware",
+      "match": {
+        "glob": "pip install *",
+        "regex": "^pip3?\\s+install"
+      },
+      "action": "rewrite",
+      "rewrite": {
+        "prepend": "uv"
+      },
+      "tmux": null,
+      "enabled": true,
+      "_comment": "uv pip install respects pyproject.toml and is significantly faster. NOTE: Layer 3 (intercept-enhanced.py) has an 'ask' rule for pip install — this rewrite runs first, so uv pip install passes through cleanly."
+    },
+
+    {
+      "id": "rewrite-pytest-to-uv",
+      "description": "Prepend 'uv run' before pytest to ensure correct venv",
+      "match": {
+        "glob": "pytest",
+        "regex": "^pytest(\\s|$)"
+      },
+      "action": "rewrite",
+      "rewrite": {
+        "prepend": "uv run"
+      },
+      "tmux": null,
+      "enabled": true,
+      "_comment": "Ensures pytest runs in the project venv, not system Python. local_priority then maps uv → ./uv."
+    },
+
+    {
+      "id": "tmux-named-shell-scripts",
+      "description": "Run named shell scripts in their own tmux window for live observation",
+      "match": {
+        "glob": null,
+        "regex": "^(bash|sh|zsh)\\s+.*\\.(sh|bash|zsh|bsh)(\\s|$)"
+      },
+      "action": "allow",
+      "tmux": "window",
+      "enabled": true,
+      "_comment": "Matches: bash foo.sh, bash foo.bash, zsh foo.zsh, sh foo.bsh — any named script invocation with common shell script extensions. Does NOT match bash -c '...' (inline scripts). Change tmux to 'session' for full isolation or 'none' to disable per-rule."
+    },
+
+    {
+      "id": "tmux-uv-run-python-scripts",
+      "description": "Run Python scripts (via uv after rewrite) in their own tmux window",
+      "match": {
+        "glob": null,
+        "regex": "(\\./)?(uv|pip) run python[3]?\\s+.*\\.py(\\s|$)"
+      },
+      "action": "allow",
+      "tmux": "window",
+      "enabled": true,
+      "_comment": "Fires AFTER rewrite-python-to-uv transforms 'python script.py' → './uv run python script.py'. This rule is why the rewrite chain stacks: python→uv→tmux. Must come AFTER the rewrite rules. Does NOT fire for 'python -c ...' inline scripts."
+    },
+
+    {
+      "id": "tmux-just-commands",
+      "description": "Run justfile recipes in their own tmux window",
+      "match": {
+        "glob": null,
+        "regex": "^(\\./)?just\\s"
+      },
+      "action": "allow",
+      "tmux": "window",
+      "enabled": true,
+      "_comment": "Matches both 'just test' and './just test' (post-local_priority). just commands often run full pipelines — tmux visibility helps monitor them. Regex (\\./)?just covers both direct and local-wrapper invocations."
+    },
+
+    {
+      "id": "deny-curl-pipe-shell",
+      "description": "Block piping curl/wget output directly to a shell interpreter",
+      "match": {
+        "glob": null,
+        "regex": "(curl|wget).+\\|\\s*(ba)?sh"
+      },
+      "action": "deny",
+      "reason": "Executing arbitrary remote code without inspection is a supply chain risk. The downloaded script could contain anything.",
+      "alternative": "Download first and inspect: curl -o /tmp/script.sh <URL> && cat /tmp/script.sh — then run manually after review.",
+      "tmux": null,
+      "enabled": true,
+      "_comment": "Also covered by Layer 2 (guard.sh when installed). Having it in Layer 1 gives better error messages."
+    },
+
+    {
+      "id": "deny-rm-rf",
+      "description": "Block recursive forced deletion",
+      "match": {
+        "glob": null,
+        "regex": "(^|[\\s;|&])rm\\s+(-[a-zA-Z]*r[a-zA-Z]*f?|-f[a-zA-Z]*r[a-zA-Z]*)\\s"
+      },
+      "action": "deny",
+      "reason": "Recursive forced deletion is irreversible. Even with correct paths, typos or variable expansion bugs can wipe important data.",
+      "alternative": "Move to a temp location instead: mv <path> /tmp/trash-$(date +%s)/ — or use targeted deletion: find <dir> -name '*.log' -delete",
+      "tmux": null,
+      "enabled": true,
+      "_comment": "Also in .claude/settings.json as 'Bash(rm -rf:*)'. When guard.sh (Layer 2) is installed, it adds additional exfiltration and secret-access checks."
+    },
+
+    {
+      "id": "deny-sudo",
+      "description": "Block privilege escalation via sudo",
+      "match": {
+        "glob": "sudo *",
+        "regex": "(^|[\\s;|&])sudo\\s"
+      },
+      "action": "deny",
+      "reason": "Privilege escalation bypasses all security controls and can modify system-wide state.",
+      "alternative": "Ask the user to run the command: 'Please run with sudo: <command>'. Or restructure to work within user permissions.",
+      "tmux": null,
+      "enabled": true,
+      "_comment": "Also caught by Layer 3 (intercept-enhanced.py). If the project legitimately needs sudo for specific operations, add a targeted allow rule ABOVE this deny rule."
+    },
+
+    {
+      "id": "deny-git-force-push",
+      "description": "Block force-pushing to remote git repos",
+      "match": {
+        "glob": null,
+        "regex": "git\\s+push.*(\\s-f(\\s|$)|\\s--force(\\s|$))"
+      },
+      "action": "deny",
+      "reason": "Force push rewrites shared history and can destroy collaborators' work. It also makes code review and auditing harder.",
+      "alternative": "Use: git push --force-with-lease (checks for concurrent upstream changes before pushing). Or discuss with the user first.",
+      "tmux": null,
+      "enabled": true,
+      "_comment": "Layer 3 has an 'ask' rule for git push generally."
+    },
+
+    {
+      "id": "deny-data-exfiltration",
+      "description": "Block uploading data to public paste/transfer services",
+      "match": {
+        "glob": null,
+        "regex": "(curl|wget|nc).*(pastebin\\.com|transfer\\.sh|file\\.io|0x0\\.st|ix\\.io|hastebin\\.com|paste\\.ee)"
+      },
+      "action": "deny",
+      "reason": "Uploading to public services risks exposing secrets, credentials, or proprietary code. These services may be indexed or publicly accessible.",
+      "alternative": "Save output locally: command > output.txt — then share via a secure, private channel.",
+      "tmux": null,
+      "enabled": true,
+      "_comment": "Also caught by Layer 2 (guard.sh when installed). Extend the regex if your organization has other blocked upload destinations."
+    },
+
+    {
+      "id": "deny-encode-secrets",
+      "description": "Block base64-encoding sensitive files (common exfiltration technique)",
+      "match": {
+        "glob": null,
+        "regex": "base64.+(\\.env|credentials|_key\\.pem|id_rsa|id_ed25519|\\.aws)"
+      },
+      "action": "deny",
+      "reason": "Base64-encoding credential files is a known exfiltration technique. Encoded data is trivially decodable.",
+      "alternative": "Reference credentials via environment variables. Use .env loading instead of encoding files.",
+      "tmux": null,
+      "enabled": true,
+      "_comment": "Also caught by Layer 2 (guard.sh when installed). Add to regex if you have custom credential files."
+    },
+
+    {
+      "id": "deny-chmod-777",
+      "description": "Block setting world-writable permissions",
+      "match": {
+        "glob": "chmod 777 *",
+        "regex": "chmod\\s+(a\\+rwx|0?777)"
+      },
+      "action": "deny",
+      "reason": "chmod 777 makes files writable by any user on the system, creating privilege escalation and tampering risks.",
+      "alternative": "Use chmod 755 for executables (owner can write, others can read+execute) or chmod 644 for data files.",
+      "tmux": null,
+      "enabled": true,
+      "_comment": "Also caught by Layer 3 (intercept-enhanced.py)."
+    },
+
+    {
+      "id": "translated-claude-deny-bare-uv",
+      "description": "Block bare 'uv' command — enforce use of local ./uv wrapper",
+      "match": {
+        "glob": "uv *",
+        "regex": "^uv\\s"
+      },
+      "action": "deny",
+      "reason": "This project uses a local ./uv wrapper that pipes output through cat to avoid pager issues with AI tools. Using system uv directly bypasses this.",
+      "alternative": "Use ./uv instead: ./uv run python script.py, ./uv pip install package, etc. The local_priority feature also handles this automatically.",
+      "tmux": null,
+      "enabled": true,
+      "_comment": "Translated from .claude/settings.json deny: 'Bash(uv:*)'. local_priority (enabled above) rewrites 'uv' → './uv' before rules are checked, so this rule is a safety net for edge cases where local_priority is bypassed."
+    },
+
+    {
+      "id": "translated-claude-deny-bare-just",
+      "description": "Block bare 'just' command — enforce use of local ./just wrapper",
+      "match": {
+        "glob": "just *",
+        "regex": "^just\\s"
+      },
+      "action": "deny",
+      "reason": "This project uses a local ./just wrapper that pipes output through cat. Using system just directly may cause pager issues in AI tool environments.",
+      "alternative": "Use ./just instead: ./just test, ./just lint, ./just check, etc.",
+      "tmux": null,
+      "enabled": true,
+      "_comment": "Translated from .claude/settings.json deny: 'Bash(just:*)'. local_priority rewrites 'just' → './just' automatically, so this is secondary enforcement."
+    },
+
+    {
+      "id": "translated-claude-deny-bare-python",
+      "description": "Block bare 'python' command — enforce use of uv run python",
+      "match": {
+        "glob": "python",
+        "regex": "^python(\\s|$)"
+      },
+      "action": "deny",
+      "reason": "Bare 'python' may use system Python instead of the project virtualenv. Use 'uv run python' to ensure the correct environment.",
+      "alternative": "In normal flow, rewrite-python-to-uv fires FIRST and prevents this. If you see this block, re-check rule ordering.",
+      "tmux": null,
+      "enabled": true,
+      "_comment": "Translated from .claude/settings.json deny: 'Bash(python:*)'. In normal flow, rewrite-python-to-uv (above) rewrites 'python' → 'uv run python' before reaching this rule. This is a safety net."
+    },
+
+    {
+      "id": "translated-claude-deny-bare-python3",
+      "description": "Block bare 'python3' command — enforce use of uv run python",
+      "match": {
+        "glob": "python3",
+        "regex": "^python3(\\s|$)"
+      },
+      "action": "deny",
+      "reason": "Bare 'python3' may use system Python instead of the project virtualenv. Use 'uv run python' to ensure the correct environment.",
+      "alternative": "Use: uv run python (or ./uv run python). The rewrite-python-to-uv rule handles this automatically for most cases.",
+      "tmux": null,
+      "enabled": true,
+      "_comment": "Translated from .claude/settings.json deny: 'Bash(python3:*)'. The rewrite rule regex '^python3?(\\s|$)' handles both 'python' and 'python3'."
+    }
+  ]
+}

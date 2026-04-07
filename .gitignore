@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+.env
+.venv/
+.log/
+rtk/target/
+.langywrap/active_variant.yaml
+scripts/adhoc/*.sh
+scripts/adhoc/*.py
+!scripts/adhoc/README.md
+node_modules/
+*.lock

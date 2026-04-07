@@ -1,0 +1,415 @@
+# ============================================================================
+# PERMISSIONS CONFIGURATION
+# ============================================================================
+#
+# This file defines what operations are ALLOWED, DENIED, or require ASK (user confirmation).
+#
+# PHILOSOPHY:
+#   - Default DENY dangerous operations (fail-safe)
+#   - Default ALLOW safe read operations
+#   - ASK for operations with potential impact
+#
+# EACH RULE CAN HAVE:
+#   - pattern: What to match
+#   - action: deny, allow, ask
+#   - message: Helpful message shown to agent
+#   - suggestion: Alternative safe approach
+#   - reason: Why this is blocked (for understanding)
+#
+# ============================================================================
+
+version: "1.0"
+mode: "restrictive"  # restrictive, permissive, paranoid
+
+# ============================================================================
+# DENIED OPERATIONS (Blocked immediately with helpful messages)
+# ============================================================================
+deny:
+  # --------------------------------------------------------------------------
+  # DESTRUCTIVE FILE OPERATIONS
+  # WHY BLOCKED: Can cause permanent data loss or system damage
+  # --------------------------------------------------------------------------
+  - pattern: "rm:-rf"
+    reason: "Recursive delete can cause permanent data loss"
+    message: "❌ Recursive deletion blocked for safety"
+    suggestion: |
+      Instead of deleting files directly, please:
+      1. Create a TODO comment: # TODO: Delete /path/to/file
+      2. Or move to trash: mv /path/to/file ~/.trash/
+      3. Or ask the user: "Should I delete /path/to/file?"
+    alternatives:
+      - "Create deletion marker file"
+      - "Add to .gitignore if unwanted"
+      - "Ask user for confirmation"
+
+  - pattern: "rm:-r"
+    reason: "Recursive delete can cause permanent data loss"
+    message: "❌ Recursive deletion blocked for safety"
+    suggestion: |
+      Please mark files for deletion instead:
+      - Create a file: .to-delete.txt listing files
+      - Or create TODO comments in code
+      - User can review and delete manually
+
+  - pattern: "dd:if="
+    reason: "Direct disk writing can corrupt filesystems"
+    message: "❌ Direct disk operations not permitted"
+    suggestion: |
+      If you need to work with disk images:
+      - Create a regular file instead: touch imagefile.img
+      - Use higher-level tools: truncate, fallocate
+      - Ask user to run disk operations manually
+
+  - pattern: "mkfs"
+    reason: "Filesystem creation can destroy data"
+    message: "❌ Filesystem operations not permitted"
+    suggestion: "Please ask the user to perform filesystem operations manually"
+
+  # --------------------------------------------------------------------------
+  # PRIVILEGE ESCALATION
+  # WHY BLOCKED: Can bypass all security measures
+  # --------------------------------------------------------------------------
+  - pattern: "sudo:*"
+    reason: "Elevated privileges bypass security controls"
+    message: "❌ Privilege escalation not permitted"
+    suggestion: |
+      Instead of using sudo:
+      1. Perform operations within user permissions
+      2. Ask user: "This requires sudo - can you run: <command>?"
+      3. Create a script for user to review and run
+
+  - pattern: "su:*"
+    reason: "User switching bypasses security controls"
+    message: "❌ User switching not permitted"
+    suggestion: "Please work within current user permissions or ask user to switch users manually"
+
+  # --------------------------------------------------------------------------
+  # SYSTEM CONTROL
+  # WHY BLOCKED: Can disrupt system availability
+  # --------------------------------------------------------------------------
+  - pattern: "shutdown:*"
+    reason: "System shutdown affects availability"
+    message: "❌ System shutdown not permitted"
+    suggestion: "If work is complete, please notify user: 'Task finished, you may shutdown if desired'"
+
+  - pattern: "reboot:*"
+    reason: "System reboot affects availability"
+    message: "❌ System reboot not permitted"
+    suggestion: "If reboot is needed, create TODO: '# TODO: Reboot system to apply changes'"
+
+  - pattern: "systemctl:*"
+    reason: "Service management can affect system stability"
+    message: "❌ Service management not permitted"
+    suggestion: |
+      Instead of managing services:
+      - Document required service changes in README
+      - Create setup script for user to review
+      - Add to installation instructions
+
+  # --------------------------------------------------------------------------
+  # DANGEROUS PERMISSIONS
+  # WHY BLOCKED: Can create security vulnerabilities
+  # --------------------------------------------------------------------------
+  - pattern: "chmod:777"
+    reason: "777 permissions create security vulnerabilities"
+    message: "❌ Overly permissive file permissions blocked"
+    suggestion: |
+      Instead of chmod 777, use appropriate permissions:
+      - For user executables: chmod u+x filename (755)
+      - For user-only files: chmod 600 filename
+      - For group access: chmod 660 filename
+      Explain in comments why each permission level is needed.
+
+  - pattern: "chmod:-R:777"
+    reason: "Recursive 777 creates severe security vulnerabilities"
+    message: "❌ Recursive permission changes blocked"
+    suggestion: |
+      Please use targeted permissions:
+      - Identify specific files that need changes
+      - Set minimal required permissions per file
+      - Document why each file needs its permissions
+
+  # --------------------------------------------------------------------------
+  # FILE SYSTEM MANIPULATION
+  # WHY BLOCKED: Can cause data corruption or loss
+  # --------------------------------------------------------------------------
+  - pattern: "mount:*"
+    reason: "Mounting filesystems requires privileges and can cause issues"
+    message: "❌ Filesystem mounting not permitted"
+    suggestion: "Please ask user to mount filesystems manually if needed"
+
+  - pattern: "umount:*"
+    reason: "Unmounting can cause data loss if writes are pending"
+    message: "❌ Filesystem unmounting not permitted"
+    suggestion: "Please ask user to unmount filesystems when safe"
+
+# ============================================================================
+# ASK OPERATIONS (Require user confirmation)
+# ============================================================================
+ask:
+  # --------------------------------------------------------------------------
+  # PACKAGE INSTALLATION
+  # WHY ASK: Can introduce vulnerabilities or break dependencies
+  # --------------------------------------------------------------------------
+  - pattern: "npm:install"
+    reason: "Package installation can introduce vulnerabilities"
+    message: "⚠️  Package installation requires confirmation"
+    prompt: |
+      Install npm package?
+      Package: {package_name}
+      Reason: {reason}
+      Security: Package will be scanned for known vulnerabilities
+    alternatives:
+      - "Add to package.json for user review"
+      - "Document in README.md dependencies section"
+
+  - pattern: "pip:install"
+    reason: "Package installation can introduce vulnerabilities"
+    message: "⚠️  Python package installation requires confirmation"
+    prompt: |
+      Install pip package?
+      Package: {package_name}
+      This will be installed in: {environment}
+
+  - pattern: "yarn:add"
+    reason: "Package installation requires review"
+    message: "⚠️  Yarn package addition requires confirmation"
+
+  # --------------------------------------------------------------------------
+  # GIT OPERATIONS
+  # WHY ASK: Can publish or lose work
+  # --------------------------------------------------------------------------
+  - pattern: "git:push"
+    reason: "Publishing code should be intentional"
+    message: "⚠️  Git push requires confirmation"
+    prompt: |
+      Push commits to remote?
+      Branch: {branch}
+      Commits: {commit_count}
+      Remote: {remote}
+
+  - pattern: "git:force"
+    reason: "Force push can overwrite remote history"
+    message: "⚠️  Force push requires explicit confirmation"
+    prompt: |
+      ⚠️  WARNING: Force push will overwrite remote history!
+      This can cause data loss for other developers.
+      Are you absolutely sure?
+
+  - pattern: "git:reset:--hard"
+    reason: "Hard reset can lose uncommitted work"
+    message: "⚠️  Hard reset requires confirmation"
+    prompt: |
+      ⚠️  WARNING: Hard reset will discard all uncommitted changes!
+      Uncommitted changes: {status}
+      Reset to: {target}
+
+  # --------------------------------------------------------------------------
+  # DOCKER OPERATIONS
+  # WHY ASK: Resource usage and potential security implications
+  # --------------------------------------------------------------------------
+  - pattern: "docker:run"
+    reason: "Container execution uses resources and may have security implications"
+    message: "⚠️  Docker run requires confirmation"
+    prompt: |
+      Run Docker container?
+      Image: {image}
+      Ports: {ports}
+      Volumes: {volumes}
+
+  - pattern: "docker:rm"
+    reason: "Container removal can lose data in volumes"
+    message: "⚠️  Container removal requires confirmation"
+
+# ============================================================================
+# ALLOWED OPERATIONS (Safe read/analysis operations)
+# ============================================================================
+allow:
+  # --------------------------------------------------------------------------
+  # FILE READING
+  # --------------------------------------------------------------------------
+  - pattern: "cat:*"
+    reason: "Reading files is safe"
+
+  - pattern: "head:*"
+    reason: "Reading file previews is safe"
+
+  - pattern: "tail:*"
+    reason: "Reading file ends is safe"
+
+  - pattern: "less:*"
+    reason: "Paging through files is safe"
+
+  - pattern: "grep:*"
+    reason: "Searching files is safe"
+
+  - pattern: "find:*"
+    reason: "Finding files is safe"
+
+  # --------------------------------------------------------------------------
+  # DIRECTORY OPERATIONS
+  # --------------------------------------------------------------------------
+  - pattern: "ls:*"
+    reason: "Listing directories is safe"
+
+  - pattern: "pwd:*"
+    reason: "Showing current directory is safe"
+
+  - pattern: "cd:*"
+    reason: "Changing directories is safe"
+
+  - pattern: "tree:*"
+    reason: "Showing directory structure is safe"
+
+  # --------------------------------------------------------------------------
+  # FILE METADATA
+  # --------------------------------------------------------------------------
+  - pattern: "stat:*"
+    reason: "Reading file metadata is safe"
+
+  - pattern: "file:*"
+    reason: "Identifying file types is safe"
+
+  - pattern: "wc:*"
+    reason: "Counting words/lines is safe"
+
+  # --------------------------------------------------------------------------
+  # GIT READ OPERATIONS
+  # --------------------------------------------------------------------------
+  - pattern: "git:status"
+    reason: "Checking git status is safe"
+
+  - pattern: "git:log"
+    reason: "Viewing git history is safe"
+
+  - pattern: "git:diff"
+    reason: "Viewing changes is safe"
+
+  - pattern: "git:show"
+    reason: "Viewing commits is safe"
+
+  - pattern: "git:branch"
+    reason: "Listing branches is safe"
+
+  # --------------------------------------------------------------------------
+  # SAFE FILE CREATION
+  # --------------------------------------------------------------------------
+  - pattern: "mkdir:*"
+    reason: "Creating directories in project is safe"
+    constraint: "within_project_dir"
+
+  - pattern: "touch:*"
+    reason: "Creating empty files is safe"
+    constraint: "within_project_dir"
+
+  - pattern: "echo:*:>"
+    reason: "Writing files via echo is permitted"
+    constraint: "within_project_dir"
+
+  # --------------------------------------------------------------------------
+  # CODE EDITING
+  # --------------------------------------------------------------------------
+  - pattern: "code:*"
+    reason: "Opening editor is safe"
+
+  - pattern: "vim:*"
+    reason: "Opening editor is safe"
+
+  - pattern: "nano:*"
+    reason: "Opening editor is safe"
+
+# ============================================================================
+# DATA THEFT PREVENTION (Optional - enable with ENABLE_DATA_THEFT_PREVENTION)
+# ============================================================================
+data_theft_prevention:
+  enabled: true
+
+  # Sensitive file patterns that should never be read or transmitted
+  sensitive_files:
+    - pattern: "**/.env"
+      reason: "Environment files contain secrets"
+      message: "❌ Access to .env files blocked"
+      suggestion: "Use example.env or .env.template instead"
+
+    - pattern: "**/.aws/**"
+      reason: "AWS credentials are sensitive"
+      message: "❌ Access to AWS credentials blocked"
+      suggestion: "Configure AWS credentials through proper channels"
+
+    - pattern: "**/.ssh/**"
+      reason: "SSH keys are sensitive"
+      message: "❌ Access to SSH keys blocked"
+      suggestion: "SSH keys should be managed manually"
+
+    - pattern: "**/credentials*"
+      reason: "Credential files are sensitive"
+      message: "❌ Access to credential files blocked"
+
+    - pattern: "**/*_key.pem"
+      reason: "Private keys are sensitive"
+      message: "❌ Access to private keys blocked"
+
+  # Network destinations that are blocked (potential exfiltration)
+  blocked_destinations:
+    - domain: "pastebin.com"
+      reason: "Common data exfiltration target"
+      message: "❌ Access to pastebin blocked"
+      suggestion: "Use project-local files or official code sharing tools"
+
+    - domain: "transfer.sh"
+      reason: "Temporary file sharing service"
+      message: "❌ Access to file sharing services blocked"
+
+    - domain: "file.io"
+      reason: "Temporary file sharing service"
+      message: "❌ Access to file sharing services blocked"
+
+    - domain: "paste.ee"
+      reason: "Paste service for data exfiltration"
+      message: "❌ Access to paste services blocked"
+
+    - domain: "0x0.st"
+      reason: "Anonymous file sharing service"
+      message: "❌ Access to file sharing services blocked"
+
+    - domain: "ix.io"
+      reason: "Command-line paste service"
+      message: "❌ Access to paste services blocked"
+
+  # Encoding/transfer patterns for credential files
+  blocked_patterns:
+    - pattern: "base64:*.env"
+      reason: "Base64 encoding of secrets facilitates exfiltration"
+      message: "❌ Encoding of secret files blocked"
+      suggestion: "Reference secrets via environment variables, don't read files directly"
+
+    - pattern: "base64:*credentials*"
+      reason: "Base64 encoding of credentials facilitates exfiltration"
+      message: "❌ Encoding of credential files blocked"
+
+    - pattern: "base64:*_key.pem"
+      reason: "Base64 encoding of private keys facilitates exfiltration"
+      message: "❌ Encoding of private keys blocked"
+
+    - pattern: "scp:*.env"
+      reason: "Transferring secret files to remote hosts"
+      message: "❌ Transfer of secret files blocked"
+      suggestion: "Configure secrets on the target host directly"
+
+    - pattern: "rsync:*.ssh/*"
+      reason: "Syncing SSH keys to remote hosts"
+      message: "❌ Transfer of SSH keys blocked"
+      suggestion: "Generate new keys on the target host"
+
+# ============================================================================
+# CUSTOM RULES
+# ============================================================================
+# Add your project-specific rules here
+custom: []
+
+# Example custom rule:
+# custom:
+#   - pattern: "my-dangerous-script.sh"
+#     action: deny
+#     reason: "This script has known issues"
+#     message: "Use my-safe-script.sh instead"

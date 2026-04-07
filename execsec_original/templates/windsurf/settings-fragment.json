@@ -1,0 +1,25 @@
+{
+  "cascade.commandsDenyList": [
+    "rm -rf",
+    "rm -r",
+    "sudo",
+    "dd if=",
+    "mkfs",
+    "chmod 777",
+    "shutdown",
+    "reboot",
+    "systemctl",
+    "mount",
+    "umount",
+    "git push --force",
+    "git push -f",
+    "curl *pastebin*",
+    "curl *transfer.sh*",
+    "curl *file.io*",
+    "curl *paste.ee*",
+    "curl *0x0.st*",
+    "curl *ix.io*",
+    "wget *pastebin*",
+    "wget *transfer.sh*"
+  ]
+}
