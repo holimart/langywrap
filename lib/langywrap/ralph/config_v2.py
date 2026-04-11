@@ -43,22 +43,22 @@ except ImportError:
 # Model alias resolution
 # ---------------------------------------------------------------------------
 
-_MODEL_ALIASES: dict[str, str] = {
-    "haiku": "claude-haiku-4-5-20251001",
-    "sonnet": "claude-sonnet-4-6",
-    "opus": "claude-opus-4-6",
-    "kimi": "nvidia/moonshotai/kimi-k2.5",
-}
+from langywrap.ralph.aliases import BUILTIN_ALIASES as _MODEL_ALIASES
 
 
-def _resolve_model(name: str) -> str:
-    """Expand short aliases (haiku, sonnet, opus, kimi) to full model IDs."""
+def _resolve_model(name: str, extra: dict[str, str] | None = None) -> str:
+    """Expand short aliases to full model IDs.
+
+    ``extra`` is merged on top of builtins, so project aliases take precedence.
+    """
+    if extra:
+        return {**_MODEL_ALIASES, **extra}.get(name, name)
     return _MODEL_ALIASES.get(name, name)
 
 
 def _infer_backend(model: str) -> str:
     """Infer backend from model prefix: nvidia/* | openai/* | mistral/* → opencode."""
-    for prefix in ("nvidia/", "moonshotai/", "openai/", "mistral/"):
+    for prefix in ("nvidia/", "moonshotai/", "openai/", "mistral/", "google/"):
         if model.startswith(prefix):
             return "opencode"
     return "claude"

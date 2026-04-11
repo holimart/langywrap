@@ -221,20 +221,57 @@ class TestTokenSparing:
 
         assert quiet_result.token_estimate < verbose_result.token_estimate
 
-    def test_rtk_path_injected_when_configured(self) -> None:
-        """Verify RTK binary path is used in command when set (even if binary doesn't exist)."""
+    def test_rtk_path_not_prepended_when_missing(self) -> None:
+        """RTK binary that doesn't exist is silently skipped."""
         config = BackendConfig(
             type=Backend.MOCK,
-            env_overrides={
-                "MOCK_COMMAND": "echo test",
-                "RTK_PATH": "/nonexistent/rtk",  # Won't exist, but tests the code path
-            },
+            env_overrides={"MOCK_COMMAND": "echo test"},
+            rtk_path="/nonexistent/rtk",
         )
         backend = MockBackend(config)
-        # Should still work (RTK path doesn't exist, so it's not prepended)
         result = backend.run("", "mock", timeout=10)
         assert result.ok
         assert "test" in result.text
+
+    def test_rtk_path_prepended_when_present(self, tmp_path: Path) -> None:
+        """RTK binary that exists is prepended to the command."""
+        # Create a fake rtk that just passes through to the next command
+        fake_rtk = tmp_path / "rtk"
+        fake_rtk.write_text("#!/bin/bash\nshift  # drop '--'\nexec \"$@\"\n")
+        fake_rtk.chmod(0o755)
+
+        config = BackendConfig(
+            type=Backend.MOCK,
+            env_overrides={"MOCK_COMMAND": "echo rtk_was_here"},
+            rtk_path=str(fake_rtk),
+        )
+        backend = MockBackend(config)
+        result = backend.run("", "mock", timeout=10)
+        assert result.ok
+        assert "rtk_was_here" in result.text
+
+    def test_execwrap_and_rtk_layered(self, tmp_path: Path) -> None:
+        """execwrap and RTK stack correctly: cmd = [rtk, --, execwrap, ...cmd]."""
+        # Fake execwrap: append a marker env var and exec the rest
+        fake_execwrap = tmp_path / "execwrap.bash"
+        fake_execwrap.write_text("#!/bin/bash\nexec \"$@\"\n")
+        fake_execwrap.chmod(0o755)
+
+        # Fake rtk: drop '--' separator and exec the rest
+        fake_rtk = tmp_path / "rtk"
+        fake_rtk.write_text("#!/bin/bash\nshift  # drop '--'\nexec \"$@\"\n")
+        fake_rtk.chmod(0o755)
+
+        config = BackendConfig(
+            type=Backend.MOCK,
+            env_overrides={"MOCK_COMMAND": "echo layered_ok"},
+            execwrap_path=str(fake_execwrap),
+            rtk_path=str(fake_rtk),
+        )
+        backend = MockBackend(config)
+        result = backend.run("", "mock", timeout=10)
+        assert result.ok
+        assert "layered_ok" in result.text
 
 
 # ---------------------------------------------------------------------------

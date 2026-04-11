@@ -82,6 +82,18 @@ class CycleResult:
     confirmed_tokens: dict[str, bool] = field(default_factory=dict)
     """Map of step_name → whether confirmation token was found."""
 
+    rate_limited: bool = False
+    """True if any step returned a rate-limit response this cycle."""
+
+    input_tokens: int = 0
+    """Total input tokens across all steps this cycle."""
+    output_tokens: int = 0
+    """Total output tokens across all steps this cycle."""
+    tokens_by_model: dict[str, tuple[int, int]] = field(default_factory=dict)
+    """Map of model_name → (input_tokens, output_tokens) accumulated this cycle."""
+    files_accessed: dict[str, list[str]] = field(default_factory=dict)
+    """Map of step_name → list of file paths accessed."""
+
     @property
     def fully_confirmed(self) -> bool:
         """True if every step produced its confirmation token."""

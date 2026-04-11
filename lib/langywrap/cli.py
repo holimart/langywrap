@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import subprocess
 import sys
 from pathlib import Path
@@ -17,8 +18,21 @@ import click
 
 @click.group()
 @click.version_option(package_name="langywrap")
-def main() -> None:
+@click.option("-v", "--verbose", count=True, help="Increase verbosity (-v=INFO, -vv=DEBUG).")
+@click.pass_context
+def main(ctx: click.Context, verbose: int) -> None:
     """Universal AI agent orchestration toolkit."""
+    if verbose >= 2:
+        level = logging.DEBUG
+    elif verbose >= 1:
+        level = logging.INFO
+    else:
+        level = logging.WARNING
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s %(levelname)-5s [%(name)s] %(message)s",
+        datefmt="%H:%M:%S",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -262,8 +276,20 @@ def _build_router(project_dir: Path) -> "ExecutionRouter":
             execwrap = str(candidate)
             break
 
-    # Discover opencode binary
+    # Discover rtk
     import shutil
+    rtk = shutil.which("rtk")
+    if not rtk:
+        for candidate in [
+            project_dir / ".exec" / "rtk",
+            Path.home() / ".local" / "bin" / "rtk",
+            Path.home() / ".langywrap" / "rtk",
+        ]:
+            if candidate.exists() and candidate.stat().st_mode & 0o111:
+                rtk = str(candidate)
+                break
+
+    # Discover opencode binary
     opencode_bin = shutil.which("opencode")
     if not opencode_bin:
         oc_path = Path.home() / ".opencode" / "bin" / "opencode"
@@ -284,11 +310,16 @@ def _build_router(project_dir: Path) -> "ExecutionRouter":
         default=1800,
     )
 
+    import logging as _logging
+    stream_output = _logging.getLogger().isEnabledFor(_logging.INFO)
+
     if Backend.CLAUDE in used_backends:
         backends[Backend.CLAUDE] = BackendConfig(
             type=Backend.CLAUDE,
             execwrap_path=execwrap,
+            rtk_path=rtk,
             timeout_seconds=max_step_timeout,
+            stream_output=stream_output,
         )
 
     if Backend.OPENCODE in used_backends:
@@ -296,19 +327,23 @@ def _build_router(project_dir: Path) -> "ExecutionRouter":
             type=Backend.OPENCODE,
             binary_path=opencode_bin,
             execwrap_path=execwrap,
+            rtk_path=rtk,
             timeout_seconds=max_step_timeout,
+            stream_output=stream_output,
         )
 
     if Backend.OPENROUTER in used_backends:
         backends[Backend.OPENROUTER] = BackendConfig(
             type=Backend.OPENROUTER,
             api_key_source="OPENROUTER_API_KEY",
+            rtk_path=rtk,
             timeout_seconds=max_step_timeout,
         )
 
     if Backend.DIRECT_API in used_backends:
         backends[Backend.DIRECT_API] = BackendConfig(
             type=Backend.DIRECT_API,
+            rtk_path=rtk,
             timeout_seconds=max_step_timeout,
         )
 

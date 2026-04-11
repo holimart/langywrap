@@ -6,11 +6,12 @@ This module runs them uniformly and reports pass/fail with structured output.
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 
 @dataclass
@@ -27,6 +28,37 @@ class QualityReport:
     gates: list[GateResult] = field(default_factory=list)
     all_passed: bool = True
     total_duration: float = 0.0
+
+
+# Tools that RTK has Python-ecosystem filters for.
+# When RTK is available, `./uv run TOOL ...` is rewritten to `rtk TOOL ...`
+# for real output compression (vs. passthrough-only for unknown commands).
+_RTK_PYTHON_TOOLS = frozenset({"ruff", "pytest", "mypy", "black", "isort"})
+
+
+def _rtk_wrap_cmd(cmd: list[str], rtk_path: Optional[str]) -> list[str]:
+    """Rewrite a gate command to use RTK when beneficial.
+
+    ``./uv run TOOL ...`` → ``rtk TOOL ...`` for RTK-filterable tools.
+    Other commands are returned unchanged.
+    """
+    if not rtk_path:
+        return cmd
+
+    # Detect ./uv run TOOL ... pattern
+    if len(cmd) >= 3 and cmd[0] in ("./uv", "uv") and cmd[1] == "run":
+        tool = cmd[2]
+        if tool in _RTK_PYTHON_TOOLS:
+            return [rtk_path, tool, *cmd[3:]]
+
+    return cmd
+
+
+def _execwrap_cmd(cmd: list[str], execwrap_path: Optional[str]) -> list[str]:
+    """Prepend execwrap security wrapper when available."""
+    if execwrap_path and Path(execwrap_path).exists():
+        return [execwrap_path] + cmd
+    return cmd
 
 
 class QualityRunner:
@@ -47,9 +79,39 @@ class QualityRunner:
         "lean-build": ["lake", "build"],
     }
 
-    def __init__(self, project_dir: Path, gates: list[str | list[str]] | None = None) -> None:
+    def __init__(
+        self,
+        project_dir: Path,
+        gates: list[str | list[str]] | None = None,
+        rtk_path: Optional[str] = None,
+        execwrap_path: Optional[str] = None,
+    ) -> None:
         self.project_dir = Path(project_dir)
         self.gates = gates or ["lint", "typecheck", "pytest"]
+
+        # Auto-detect RTK if not provided
+        if rtk_path is None:
+            rtk_path = shutil.which("rtk")
+            if not rtk_path:
+                for candidate in [
+                    Path.home() / ".local" / "bin" / "rtk",
+                    Path.home() / ".langywrap" / "rtk",
+                ]:
+                    if candidate.exists() and candidate.stat().st_mode & 0o111:
+                        rtk_path = str(candidate)
+                        break
+        self.rtk_path = rtk_path
+
+        # Auto-detect execwrap if not provided
+        if execwrap_path is None:
+            for candidate in [
+                self.project_dir / ".exec" / "execwrap.bash",
+                Path.home() / ".langywrap" / "execwrap.bash",
+            ]:
+                if candidate.exists() and candidate.stat().st_mode & 0o111:
+                    execwrap_path = str(candidate)
+                    break
+        self.execwrap_path = execwrap_path
 
     def run_all(self, timeout_minutes: int = 10) -> QualityReport:
         """Run all configured gates. Returns report."""
@@ -73,6 +135,9 @@ class QualityRunner:
         else:
             name = " ".join(gate[:2])
             cmd = gate
+
+        cmd = _rtk_wrap_cmd(cmd, self.rtk_path)
+        cmd = _execwrap_cmd(cmd, self.execwrap_path)
 
         start = time.monotonic()
         try:
@@ -113,11 +178,16 @@ class QualityRunner:
         self.gates.append(name)
 
     @classmethod
-    def from_justfile(cls, project_dir: Path) -> QualityRunner:
+    def from_justfile(
+        cls,
+        project_dir: Path,
+        rtk_path: Optional[str] = None,
+        execwrap_path: Optional[str] = None,
+    ) -> "QualityRunner":
         """Auto-detect gates from justfile 'check' recipe."""
         justfile = Path(project_dir) / "justfile"
         if not justfile.exists():
-            return cls(project_dir)
+            return cls(project_dir, rtk_path=rtk_path, execwrap_path=execwrap_path)
 
         # Default to ./just check which runs lint + typecheck + test
-        return cls(project_dir, gates=["just-check"])
+        return cls(project_dir, gates=["just-check"], rtk_path=rtk_path, execwrap_path=execwrap_path)

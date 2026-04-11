@@ -14,6 +14,7 @@ coupled to this repo and consume its libraries, hooks, and skills.
 - `execwrap/` — Universal execution wrapper (5-layer security)
 - `harden/` — Repo hardening installer
 - `rtk/` — RTK output compression (git submodule, build from source)
+- `openwolf/` — OpenWolf token-conscious AI brain (git submodule, build from source)
 - `skills/` — Claude Code slash commands (symlinked globally)
 - `agents/` — Sub-agent definitions (Memento pattern)
 - `experiments/` — HyperAgent evolution archive and configs
@@ -28,8 +29,9 @@ coupled to this repo and consume its libraries, hooks, and skills.
 ./just sync          # uv sync dependencies
 ./just check         # lint + typecheck + test
 ./just dev           # fix + check (full local cycle)
-./just install       # System-wide install (builds RTK, installs package)
-./just install-rtk   # Build RTK from source only
+./just install           # System-wide install (builds RTK, OpenWolf, installs package)
+./just install-rtk       # Build RTK from source only
+./just install-openwolf  # Build OpenWolf from source only
 ./just couple PATH   # Couple a downstream repo
 ```
 

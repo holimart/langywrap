@@ -1,3 +1,6 @@
 [submodule "rtk"]
 	path = rtk
 	url = https://github.com/rtk-ai/rtk.git
+[submodule "openwolf"]
+	path = openwolf
+	url = https://github.com/cytostack/openwolf.git

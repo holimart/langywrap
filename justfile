@@ -16,6 +16,10 @@ install:
 install-rtk:
     @bash scripts/build_rtk.sh
 
+# Build OpenWolf from source and install to ~/.local/bin/openwolf
+install-openwolf:
+    @bash scripts/build_openwolf.sh
+
 # Couple a downstream project to langywrap
 # Usage: just couple /path/to/project [--minimal|--full|--security-only]
 couple path *args:
@@ -98,3 +102,8 @@ clean:
 clean-rtk:
     @rm -rf rtk/target
     @echo "RTK build artifacts removed."
+
+# Remove OpenWolf build artifacts (forces rebuild on next install-openwolf)
+clean-openwolf:
+    @rm -rf openwolf/dist openwolf/node_modules
+    @echo "OpenWolf build artifacts removed."

@@ -32,6 +32,7 @@ STATE_FILE="$LANGYWRAP_CONFIG_DIR/install_state.env"
 # Defaults (overridden by state file or user choices)
 OPT_PYTHON_PACKAGE=true
 OPT_RTK=true
+OPT_OPENWOLF=true
 OPT_GLOBAL_CONFIG=true
 OPT_GLOBAL_MODE="symlinks"   # symlinks | copy
 OPT_EXECWRAP=true
@@ -125,6 +126,7 @@ save_state() {
 # langywrap install state — generated $(date -Iseconds)
 OPT_PYTHON_PACKAGE=$OPT_PYTHON_PACKAGE
 OPT_RTK=$OPT_RTK
+OPT_OPENWOLF=$OPT_OPENWOLF
 OPT_GLOBAL_CONFIG=$OPT_GLOBAL_CONFIG
 OPT_GLOBAL_MODE=$OPT_GLOBAL_MODE
 OPT_EXECWRAP=$OPT_EXECWRAP
@@ -149,12 +151,20 @@ check_prerequisites() {
         ok "Python $pyver"
         if python3 -c "import sys; exit(0 if sys.version_info >= (3,10) else 1)" 2>/dev/null; then
             :
+        elif command -v uv &>/dev/null && uv python find ">=3.10" &>/dev/null; then
+            local uv_py
+            uv_py=$(uv python find ">=3.10" 2>/dev/null | head -1)
+            ok "Python via uv: $uv_py (system $pyver is old but uv provides 3.10+)"
         else
-            err "Python >= 3.10 required (found $pyver)"
+            err "Python >= 3.10 required (found $pyver). uv can install it: uv python install 3.11"
             missing+=(python3.10+)
         fi
+    elif command -v uv &>/dev/null && uv python find ">=3.10" &>/dev/null; then
+        local uv_py
+        uv_py=$(uv python find ">=3.10" 2>/dev/null | head -1)
+        ok "Python via uv: $uv_py"
     else
-        err "python3 not found"
+        err "python3 not found. Install Python 3.10+ or run: uv python install 3.11"
         missing+=(python3)
     fi
 
@@ -175,6 +185,30 @@ check_prerequisites() {
     else
         warn "cargo not found — RTK build will be skipped"
         OPT_RTK=false
+    fi
+
+    if command -v node &>/dev/null; then
+        local node_ver
+        node_ver=$(node -v)
+        ok "node $node_ver (for OpenWolf build)"
+        local node_major
+        node_major=$(echo "$node_ver" | sed 's/v//' | cut -d. -f1)
+        if (( node_major < 20 )); then
+            warn "Node.js >= 20 required for OpenWolf (found $node_ver) — OpenWolf build will be skipped"
+            OPT_OPENWOLF=false
+        fi
+    else
+        warn "node not found — OpenWolf build will be skipped"
+        OPT_OPENWOLF=false
+    fi
+
+    if command -v pnpm &>/dev/null; then
+        ok "pnpm $(pnpm --version 2>/dev/null | head -1) (for OpenWolf build)"
+    else
+        if $OPT_OPENWOLF; then
+            warn "pnpm not found — OpenWolf build will be skipped. Install with: npm install -g pnpm"
+            OPT_OPENWOLF=false
+        fi
     fi
 
     if command -v just &>/dev/null; then
@@ -199,19 +233,20 @@ feature_wizard() {
     echo -e "langywrap provides these features. Select what you'd like to install.\n"
 
     echo -e "${BOLD}Core (recommended):${NC}"
-    echo -e "  ${GREEN}1)${NC} Python package    — lib/langywrap/ installed via uv/pip (editable mode)"
-    echo -e "  ${GREEN}2)${NC} RTK compression   — Build token-saving output compressor from source"
-    echo -e "  ${GREEN}3)${NC} Global config     — Manage ~/.claude/ hooks, settings, CLAUDE.md"
+    echo -e "  ${GREEN} 1)${NC} Python package    — lib/langywrap/ installed via uv/pip (editable mode)"
+    echo -e "  ${GREEN} 2)${NC} RTK compression   — Build token-saving output compressor from source"
+    echo -e "  ${GREEN} 3)${NC} OpenWolf          — Token-conscious AI brain for Claude Code (~80% savings)"
+    echo -e "  ${GREEN} 4)${NC} Global config     — Manage ~/.claude/ hooks, settings, CLAUDE.md"
     echo -e ""
     echo -e "${BOLD}Security:${NC}"
-    echo -e "  ${GREEN}4)${NC} ExecWrap          — 5-layer execution wrapper for AI tools"
-    echo -e "  ${GREEN}5)${NC} Security hooks    — Per-tool hooks (Claude, OpenCode, Cursor, Cline)"
-    echo -e "  ${GREEN}6)${NC} Git hooks         — Pre-commit (Python scan) + pre-push (force-push block)"
+    echo -e "  ${GREEN} 5)${NC} ExecWrap          — 5-layer execution wrapper for AI tools"
+    echo -e "  ${GREEN} 6)${NC} Security hooks    — Per-tool hooks (Claude, OpenCode, Cursor, Cline)"
+    echo -e "  ${GREEN} 7)${NC} Git hooks         — Pre-commit (Python scan) + pre-push (force-push block)"
     echo -e ""
     echo -e "${BOLD}AI Agent Infrastructure:${NC}"
-    echo -e "  ${GREEN}7)${NC} Skills            — Claude Code slash commands (symlinked globally)"
-    echo -e "  ${GREEN}8)${NC} HyperAgents       — Agent evolution framework + experiment archive"
-    echo -e "  ${GREEN}9)${NC} Compound eng.     — Cross-project lessons learned hub"
+    echo -e "  ${GREEN} 8)${NC} Skills            — Claude Code slash commands (symlinked globally)"
+    echo -e "  ${GREEN} 9)${NC} HyperAgents       — Agent evolution framework + experiment archive"
+    echo -e "  ${GREEN}10)${NC} Compound eng.     — Cross-project lessons learned hub"
     echo ""
 
     if ! $NON_INTERACTIVE; then
@@ -223,7 +258,8 @@ feature_wizard() {
 
     ask_yn "  1) Install Python package?" "$(default_yn $OPT_PYTHON_PACKAGE)" && OPT_PYTHON_PACKAGE=true || OPT_PYTHON_PACKAGE=false
     ask_yn "  2) Build RTK from source?" "$(default_yn $OPT_RTK)" && OPT_RTK=true || OPT_RTK=false
-    ask_yn "  3) Set up global Claude config?" "$(default_yn $OPT_GLOBAL_CONFIG)" && OPT_GLOBAL_CONFIG=true || OPT_GLOBAL_CONFIG=false
+    ask_yn "  3) Build OpenWolf from source?" "$(default_yn $OPT_OPENWOLF)" && OPT_OPENWOLF=true || OPT_OPENWOLF=false
+    ask_yn "  4) Set up global Claude config?" "$(default_yn $OPT_GLOBAL_CONFIG)" && OPT_GLOBAL_CONFIG=true || OPT_GLOBAL_CONFIG=false
 
     if $OPT_GLOBAL_CONFIG; then
         local mode
@@ -231,12 +267,12 @@ feature_wizard() {
         OPT_GLOBAL_MODE="$mode"
     fi
 
-    ask_yn "  4) Install ExecWrap wrapper?" "$(default_yn $OPT_EXECWRAP)" && OPT_EXECWRAP=true || OPT_EXECWRAP=false
-    ask_yn "  5) Install security hooks?" "$(default_yn $OPT_SECURITY_HOOKS)" && OPT_SECURITY_HOOKS=true || OPT_SECURITY_HOOKS=false
-    ask_yn "  6) Install git hooks?" "$(default_yn $OPT_GIT_HOOKS)" && OPT_GIT_HOOKS=true || OPT_GIT_HOOKS=false
-    ask_yn "  7) Install Claude skills globally?" "$(default_yn $OPT_SKILLS)" && OPT_SKILLS=true || OPT_SKILLS=false
-    ask_yn "  8) Set up HyperAgents framework?" "$(default_yn $OPT_HYPERAGENTS)" && OPT_HYPERAGENTS=true || OPT_HYPERAGENTS=false
-    ask_yn "  9) Set up compound engineering hub?" "$(default_yn $OPT_COMPOUND)" && OPT_COMPOUND=true || OPT_COMPOUND=false
+    ask_yn "  5) Install ExecWrap wrapper?" "$(default_yn $OPT_EXECWRAP)" && OPT_EXECWRAP=true || OPT_EXECWRAP=false
+    ask_yn "  6) Install security hooks?" "$(default_yn $OPT_SECURITY_HOOKS)" && OPT_SECURITY_HOOKS=true || OPT_SECURITY_HOOKS=false
+    ask_yn "  7) Install git hooks?" "$(default_yn $OPT_GIT_HOOKS)" && OPT_GIT_HOOKS=true || OPT_GIT_HOOKS=false
+    ask_yn "  8) Install Claude skills globally?" "$(default_yn $OPT_SKILLS)" && OPT_SKILLS=true || OPT_SKILLS=false
+    ask_yn "  9) Set up HyperAgents framework?" "$(default_yn $OPT_HYPERAGENTS)" && OPT_HYPERAGENTS=true || OPT_HYPERAGENTS=false
+    ask_yn " 10) Set up compound engineering hub?" "$(default_yn $OPT_COMPOUND)" && OPT_COMPOUND=true || OPT_COMPOUND=false
 
     echo ""
     save_state
@@ -289,6 +325,39 @@ install_rtk() {
 
     # Also put in langywrap's own execwrap dir
     cp "$HOME/.local/bin/rtk" "$LANGYWRAP_DIR/execwrap/rtk" 2>/dev/null || true
+}
+
+install_openwolf() {
+    if ! $OPT_OPENWOLF; then return; fi
+    header "Building OpenWolf from source"
+
+    if ! command -v node &>/dev/null; then
+        warn "node not found — skipping OpenWolf. Install Node.js >= 20"
+        return
+    fi
+    if ! command -v pnpm &>/dev/null; then
+        warn "pnpm not found — skipping OpenWolf. Install with: npm install -g pnpm"
+        return
+    fi
+
+    if dry "cd openwolf && pnpm install && pnpm build && link to ~/.local/bin/"; then return; fi
+
+    step "Building OpenWolf (this may take a minute on first run)..."
+    (cd "$LANGYWRAP_DIR/openwolf" && pnpm install 2>&1 | tail -3)
+    (cd "$LANGYWRAP_DIR/openwolf" && pnpm build 2>&1 | tail -5)
+
+    mkdir -p "$HOME/.local/bin"
+    cat > "$HOME/.local/bin/openwolf" << WRAPPER
+#!/usr/bin/env bash
+exec node "$LANGYWRAP_DIR/openwolf/dist/bin/openwolf.js" "\$@"
+WRAPPER
+    chmod +x "$HOME/.local/bin/openwolf"
+
+    if "$HOME/.local/bin/openwolf" --version &>/dev/null; then
+        ok "OpenWolf installed: $("$HOME/.local/bin/openwolf" --version 2>&1 | head -1)"
+    else
+        warn "OpenWolf built but --version check failed"
+    fi
 }
 
 install_global_config() {
@@ -472,6 +541,7 @@ main() {
     header "Installation Summary"
     $OPT_PYTHON_PACKAGE && ok "Python package (editable)" || echo -e "  ${DIM}Skip: Python package${NC}"
     $OPT_RTK && ok "RTK (build from source)" || echo -e "  ${DIM}Skip: RTK${NC}"
+    $OPT_OPENWOLF && ok "OpenWolf (build from source)" || echo -e "  ${DIM}Skip: OpenWolf${NC}"
     $OPT_GLOBAL_CONFIG && ok "Global config ($OPT_GLOBAL_MODE)" || echo -e "  ${DIM}Skip: Global config${NC}"
     $OPT_EXECWRAP && ok "ExecWrap wrapper" || echo -e "  ${DIM}Skip: ExecWrap${NC}"
     $OPT_SECURITY_HOOKS && ok "Security hooks" || echo -e "  ${DIM}Skip: Security hooks${NC}"
@@ -488,6 +558,7 @@ main() {
     # Execute
     install_python_package
     install_rtk
+    install_openwolf
     install_system_permissions
     install_global_config
     install_hyperagents

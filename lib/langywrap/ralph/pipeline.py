@@ -42,22 +42,22 @@ from pydantic import BaseModel, Field
 # Model alias resolution (shared with config_v2)
 # ---------------------------------------------------------------------------
 
-_MODEL_ALIASES: dict[str, str] = {
-    "haiku": "claude-haiku-4-5-20251001",
-    "sonnet": "claude-sonnet-4-6",
-    "opus": "claude-opus-4-6",
-    "kimi": "nvidia/moonshotai/kimi-k2.5",
-}
+from langywrap.ralph.aliases import BUILTIN_ALIASES as _MODEL_ALIASES
 
 
-def _resolve_model(name: str) -> str:
-    """Expand short aliases to full model IDs."""
+def _resolve_model(name: str, extra: dict[str, str] | None = None) -> str:
+    """Expand short aliases to full model IDs.
+
+    ``extra`` is merged on top of builtins, so project aliases take precedence.
+    """
+    if extra:
+        return {**_MODEL_ALIASES, **extra}.get(name, name)
     return _MODEL_ALIASES.get(name, name)
 
 
 def _infer_backend(model: str) -> str:
     """Infer backend from model prefix."""
-    for prefix in ("nvidia/", "moonshotai/", "openai/", "mistral/"):
+    for prefix in ("nvidia/", "moonshotai/", "openai/", "mistral/", "google/"):
         if model.startswith(prefix):
             return "opencode"
     return "claude"
@@ -407,6 +407,21 @@ class Pipeline(BaseModel):
     )
     """Regex patterns for files that must never be committed."""
 
+    aliases: dict[str, str] = Field(default_factory=dict)
+    """Project-specific model aliases (merged on top of builtins).
+
+    Example::
+
+        Pipeline(
+            aliases={
+                "codex":      "openai/gpt-5.1-codex",
+                "codex-mini": "openai/codex-mini-latest",
+                "codex-max":  "openai/gpt-5.1-codex-max",
+            },
+            ...
+        )
+    """
+
     scope: str = ""
     """Scope restriction injected into every prompt."""
 
@@ -435,6 +450,7 @@ class Pipeline(BaseModel):
 
         project_dir = project_dir.resolve()
         prompts_dir = project_dir / self.prompts if self.prompts else project_dir / self.state / "prompts"
+        resolve = lambda name: _resolve_model(name, self.aliases)  # noqa: E731
 
         step_configs: list[StepConfig] = []
         cycle_type_rules: list[dict[str, str]] = []
@@ -481,7 +497,7 @@ class Pipeline(BaseModel):
                         existing = {"name": ct_name, "pattern": ""}
                         cycle_type_rules.append(existing)
                     if "model" in overrides:
-                        existing["model"] = _resolve_model(overrides["model"])
+                        existing["model"] = resolve(overrides["model"])
                     if "inject" in overrides:
                         inject_val = overrides["inject"]
                         # If ends with .md, read the file
@@ -755,7 +771,8 @@ class Pipeline(BaseModel):
         """Convert a Step to a StepConfig."""
         from langywrap.ralph.config import StepConfig, StepRole
 
-        model_id = _resolve_model(step.model)
+        resolve = lambda name: _resolve_model(name, self.aliases)  # noqa: E731
+        model_id = resolve(step.model)
         role = _infer_role(step.name)
 
         # Resolve prompt template path
@@ -781,7 +798,7 @@ class Pipeline(BaseModel):
         if step.retry:
             retry_count = step.retry.attempts
             retry_gate = step.retry.gate.command if step.retry.gate else ""
-            retry_model = _resolve_model(step.retry.model) if step.retry.model else ""
+            retry_model = resolve(step.retry.model) if step.retry.model else ""
             if step.retry.prompt:
                 retry_prompt = prompts_dir / step.retry.prompt
             retry_cycles = step.retry.cycles
@@ -789,7 +806,7 @@ class Pipeline(BaseModel):
         # Simple fallback → convert to retry with 1 attempt
         if step.fallback and not step.retry:
             retry_count = 1
-            retry_model = _resolve_model(step.fallback)
+            retry_model = resolve(step.fallback)
 
         tools = ",".join(step.tools) if step.tools else "Read,Write,Edit,Glob,Grep,Bash"
 
@@ -834,8 +851,7 @@ class Pipeline(BaseModel):
                 configs.append(sc)
         return configs
 
-    @staticmethod
-    def _step_to_route_rule(step: Step, seen: set[str]) -> "RouteRule | None":
+    def _step_to_route_rule(self, step: Step, seen: set[str]) -> "RouteRule | None":
         """Convert a Step to a RouteRule for the ExecutionRouter."""
         try:
             from langywrap.router.config import (
@@ -856,20 +872,21 @@ class Pipeline(BaseModel):
             return None
         seen.add(role.value)
 
-        model_id = _resolve_model(step.model)
+        resolve = lambda name: _resolve_model(name, self.aliases)  # noqa: E731
+        model_id = resolve(step.model)
         backend = Backend(_infer_backend(model_id))
 
         # Build retry models from fallback chain
         retry_models: list[str] = []
         if step.fallback:
-            retry_models.append(_resolve_model(step.fallback))
+            retry_models.append(resolve(step.fallback))
         if step.retry and step.retry.fallback:
-            fb = _resolve_model(step.retry.fallback)
+            fb = resolve(step.retry.fallback)
             if fb not in retry_models:
                 retry_models.append(fb)
         # Default fallback to sonnet if not already sonnet
-        if not retry_models and model_id != _resolve_model("sonnet"):
-            retry_models = [_resolve_model("sonnet")]
+        if not retry_models and model_id != resolve("sonnet"):
+            retry_models = [resolve("sonnet")]
 
         return RouteRule(
             role=role,

@@ -57,13 +57,13 @@ logger = logging.getLogger(__name__)
 def _infer_backend_from_model(model: str) -> Backend:
     """Infer the correct backend from a model identifier.
 
-    Models with provider prefixes (nvidia/, openai/, moonshotai/, mistral/)
-    are routed to opencode.  Everything else (claude-*, etc.) goes to claude.
+    Claude Code (Backend.CLAUDE) is reserved for Anthropic models only.
+    Everything else defaults to opencode — including OpenRouter, NVIDIA NIM,
+    OpenAI, Mistral, and any other provider prefix.
     """
-    for prefix in ("nvidia/", "moonshotai/", "openai/", "mistral/"):
-        if model.startswith(prefix):
-            return Backend.OPENCODE
-    return Backend.CLAUDE
+    if model.startswith("claude-"):
+        return Backend.CLAUDE
+    return Backend.OPENCODE
 
 
 # ---------------------------------------------------------------------------
@@ -76,12 +76,11 @@ _HANG_OUTPUT_THRESHOLD = 2048
 # Default backoff when a rate limit is detected (seconds).
 _RATE_LIMIT_BACKOFF_SECONDS = 600  # 10 minutes
 
-# Hang backoff: exponential sequence (seconds).  Each consecutive hang on
-# the *same* model doubles the wait.  After _HANG_MAX_RETRIES_PER_MODEL
-# consecutive hangs the router advances to the next model in the chain.
+# Hang backoff: exponential sequence (seconds).  On hang, the router retries
+# the same model indefinitely (hang #1=30s, #2=60s, …, capped at 300s).
+# Hangs do NOT count against max_attempts and do NOT advance the model chain.
 _HANG_BACKOFF_BASE = 30  # first wait
 _HANG_BACKOFF_MAX = 300  # cap per wait
-_HANG_MAX_RETRIES_PER_MODEL = 3  # retries before advancing model
 
 # Heartbeat interval (seconds) — logs a progress line while waiting.
 _HEARTBEAT_INTERVAL = 60
@@ -270,6 +269,7 @@ class ExecutionRouter:
         model: Optional[str] = None,
         tools: Optional[Union[str, List[str]]] = None,
         engine: Optional[str] = None,
+        abort_on_hang: bool = False,
     ) -> SubagentResult:
         """
         Route ``role`` and run ``prompt`` against the selected backend+model.
@@ -285,6 +285,8 @@ class ExecutionRouter:
           - model: override the route rule's model selection
           - tools: tool list hint (passed to backend if supported)
           - engine: engine hint (passed to backend if supported)
+          - abort_on_hang: if True, return immediately on first hang (no retries,
+            no backoff). Use for fail_fast steps to avoid waiting hours.
 
         Returns the first successful SubagentResult, or the last failure result
         if all retries are exhausted.
@@ -365,6 +367,17 @@ class ExecutionRouter:
 
             last_result = result
 
+            # Check rate limit BEFORE ok — a model can return exit_code=0 while
+            # the response body contains "You've hit your limit" (NVIDIA/Kimi).
+            if result.rate_limited:
+                logger.warning(
+                    "[%s] Rate limited (detected in output). Waiting %ds…",
+                    role.value, self._rate_limit_backoff,
+                )
+                time.sleep(self._rate_limit_backoff)
+                attempt += 1
+                continue
+
             if result.ok:
                 logger.info(
                     "[%s] completed — model=%s tokens≈%d duration=%.1fs",
@@ -373,33 +386,28 @@ class ExecutionRouter:
                 return result
 
             if result.hung:
+                hang_kind = "idle-timeout" if result.idle_timeout else "no-output"
+                if abort_on_hang:
+                    logger.warning(
+                        "[%s] API hang on %s (%s, %dB output). "
+                        "abort_on_hang=True — returning failure immediately.",
+                        role.value, model, hang_kind, len(result.raw_output),
+                    )
+                    return result
+                # Default: retry indefinitely on same model — do NOT advance
+                # model or increment attempt. Hangs are transient; only real
+                # failures (non-hang exit codes) count against max_attempts.
                 hang_streak += 1
                 backoff = min(
                     _HANG_BACKOFF_BASE * (2 ** (hang_streak - 1)),
                     _HANG_BACKOFF_MAX,
                 )
-                if hang_streak >= _HANG_MAX_RETRIES_PER_MODEL:
-                    # Advance to next model in the chain
-                    model_idx += 1
-                    hang_streak = 0
-                    attempt += 1
-                    logger.warning(
-                        "[%s] API hang ×%d on %s (%dB output). "
-                        "Advancing to next model after %ds backoff… "
-                        "(attempt %d/%d)",
-                        role.value, _HANG_MAX_RETRIES_PER_MODEL, model,
-                        len(result.raw_output), backoff,
-                        attempt, max_attempts - 1,
-                    )
-                else:
-                    logger.warning(
-                        "[%s] API hang on %s (%dB output). "
-                        "Retrying same model after %ds backoff… "
-                        "(hang %d/%d, attempt %d/%d)",
-                        role.value, model, len(result.raw_output), backoff,
-                        hang_streak, _HANG_MAX_RETRIES_PER_MODEL,
-                        attempt + 1, max_attempts,
-                    )
+                logger.warning(
+                    "[%s] API hang on %s (%s, %dB output). "
+                    "Retrying same model after %ds backoff… (hang #%d)",
+                    role.value, model, hang_kind,
+                    len(result.raw_output), backoff, hang_streak,
+                )
                 time.sleep(backoff)
                 continue
 
@@ -420,6 +428,16 @@ class ExecutionRouter:
                 logger.warning(
                     "[%s] Genuine timeout (%dB output). Not retrying.",
                     role.value, len(result.raw_output),
+                )
+                break
+
+            # Permanent failure (model not found / no access) — no point retrying
+            combined = (result.error + " " + result.text).lower()
+            if "may not exist" in combined or "you may not have access" in combined:
+                logger.error(
+                    "[%s] Permanent failure on %s — model unavailable. "
+                    "Not retrying. (%s)",
+                    role.value, model, result.error[:200],
                 )
                 break
 

@@ -62,6 +62,9 @@ _MODEL_ALIASES: dict[str, str] = {
     "sonnet": "claude-sonnet-4-6",
     "opus": "claude-opus-4-6",
     "kimi": "nvidia/moonshotai/kimi-k2.5",
+    "gemma4": "openrouter/google/gemma-4-31b-it",
+    "gemma4-nvidia": "nvidia/google/gemma-4-31b-it",
+    "gemma4-openrouter": "openrouter/google/gemma-4-31b-it:free",
 }
 
 
@@ -423,7 +426,7 @@ class Module:
 
         runner = self._runner
         if runner is None:
-            self._log(f"  └── {name}: STUB (no runner)")
+            self._log(f"  └── {name}: STUB (no runner)\n")
             output = f"# {name} STUB\n"
             self._outputs[name] = output
             return output, True
@@ -437,7 +440,7 @@ class Module:
                 break
 
         if not prompt_path.exists():
-            self._log(f"  └── {name}: SKIP (no prompt template: {prompt_path})")
+            self._log(f"  └── {name}: SKIP (no prompt template: {prompt_path})\n")
             return f"# {name} ERROR: no prompt template\n", False
 
         # Build prompt
@@ -462,7 +465,7 @@ class Module:
 
         # Route through ExecutionRouter
         if runner.router is None:
-            self._log(f"  └── {name}: STUB (no router)")
+            self._log(f"  └── {name}: STUB (no router)\n")
             output = f"# {name} STUB\n"
             self._outputs[name] = output
             return output, True
@@ -491,7 +494,7 @@ class Module:
                 out_path = runner.state.step_output_path(name)
                 out_path.write_text(output, encoding="utf-8")
 
-                self._log(f"  └── {name}: done ({len(output)} chars)")
+                self._log(f"  └── {name}: done ({len(output)} chars)\n")
                 return output, True
 
             except TimeoutError as exc:
@@ -500,7 +503,7 @@ class Module:
                     self._log(f"  │   [{name}] API hang. Retry {attempt}/{max_attempts - 1}...")
                     time.sleep(15)
                     continue
-                self._log(f"  └── {name}: TIMEOUT")
+                self._log(f"  └── {name}: TIMEOUT\n")
                 output = f"# {name} TIMEOUT\n{exc}\n"
                 self._outputs[name] = output
                 if fail_fast:
@@ -514,7 +517,7 @@ class Module:
                         self._log(f"  │   [{name}] Rate limited. Waiting 10m...")
                         time.sleep(600)
                         continue
-                self._log(f"  └── {name}: ERROR — {exc}")
+                self._log(f"  └── {name}: ERROR — {exc}\n")
                 output = f"# {name} ERROR\n{exc}\n"
                 self._outputs[name] = output
                 if fail_fast:
@@ -532,9 +535,9 @@ class Module:
     # -----------------------------------------------------------------------
 
     def _log(self, msg: str) -> None:
-        if self.verbose:
-            print(msg)
         log.info(msg)
+        if self.verbose and not log.isEnabledFor(logging.INFO):
+            print(msg)
 
     # -----------------------------------------------------------------------
     # HyperAgent genome interface
@@ -963,9 +966,9 @@ class ModuleRunner:
     # -----------------------------------------------------------------------
 
     def _log(self, msg: str) -> None:
-        if self.module.verbose:
-            print(msg)
         log.info(msg)
+        if self.module.verbose and not log.isEnabledFor(logging.INFO):
+            print(msg)
 
 
 # ---------------------------------------------------------------------------
