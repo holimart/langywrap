@@ -8,7 +8,6 @@ substitute_template: $-variable substitution for prompt templates.
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -21,7 +20,7 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 
 
-def build_orient_context(state: "RalphState", max_recent_cycles: int = 3) -> str:
+def build_orient_context(state: RalphState, max_recent_cycles: int = 3) -> str:
     """Return the pre-digested context string for the ORIENT step.
 
     Delegates to RalphState.build_orient_context — this function exists as a

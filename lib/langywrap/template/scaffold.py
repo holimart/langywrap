@@ -6,11 +6,9 @@ Placeholders like __PROJECT_NAME__, __DESCRIPTION__ are substituted.
 
 from __future__ import annotations
 
-import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
-
 
 TEMPLATE_DIR = Path(__file__).parent / "templates"
 

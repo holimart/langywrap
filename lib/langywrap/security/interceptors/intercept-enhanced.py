@@ -7,20 +7,20 @@ This interceptor reads configuration files and provides polite, constructive
 feedback when blocking commands, suggesting safe alternatives.
 """
 
-import sys
+import os
 import re
 import subprocess
-import os
-import yaml
+import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Tuple, Optional
+
+import yaml
 
 # ============================================================================
 # CONFIGURATION LOADING
 # ============================================================================
 
-def find_config_file(filename: str, search_dirs: List[str]) -> Optional[str]:
+def find_config_file(filename: str, search_dirs: list[str]) -> str | None:
     """Find config file in search directories"""
     for dir_path in search_dirs:
         file_path = Path(dir_path) / filename
@@ -28,7 +28,7 @@ def find_config_file(filename: str, search_dirs: List[str]) -> Optional[str]:
             return str(file_path)
     return None
 
-def load_permissions_config() -> Dict:
+def load_permissions_config() -> dict:
     """Load permissions configuration from hierarchy"""
     # Search directories (in order of preference)
     search_dirs = [
@@ -42,7 +42,7 @@ def load_permissions_config() -> Dict:
     config_file = find_config_file("permissions.yaml", search_dirs)
 
     if config_file:
-        with open(config_file, 'r') as f:
+        with open(config_file) as f:
             return yaml.safe_load(f)
 
     # Fallback to minimal default
@@ -56,7 +56,7 @@ def load_permissions_config() -> Dict:
 # COMMAND ANALYSIS
 # ============================================================================
 
-def parse_command(command: str) -> Tuple[str, List[str]]:
+def parse_command(command: str) -> tuple[str, list[str]]:
     """Parse command into program and arguments"""
     parts = command.split()
     if not parts:
@@ -93,7 +93,7 @@ def match_pattern(command: str, pattern: str) -> bool:
     else:
         return arg_pattern in args_str
 
-def find_matching_rule(command: str, rules: List[Dict]) -> Optional[Dict]:
+def find_matching_rule(command: str, rules: list[dict]) -> dict | None:
     """Find first rule that matches command"""
     for rule in rules:
         pattern = rule.get('pattern', '')
@@ -105,14 +105,14 @@ def find_matching_rule(command: str, rules: List[Dict]) -> Optional[Dict]:
 # MESSAGE FORMATTING
 # ============================================================================
 
-def format_message(template: str, context: Dict) -> str:
+def format_message(template: str, context: dict) -> str:
     """Format message template with context"""
     try:
         return template.format(**context)
     except KeyError:
         return template
 
-def print_block_message(rule: Dict, command: str):
+def print_block_message(rule: dict, command: str):
     """Print helpful block message"""
     print("\n" + "="*70, file=sys.stderr)
 
@@ -126,20 +126,20 @@ def print_block_message(rule: Dict, command: str):
 
     # Suggestion
     if 'suggestion' in rule:
-        print(f"\n💡 Suggested Alternative:", file=sys.stderr)
+        print("\n💡 Suggested Alternative:", file=sys.stderr)
         suggestion = rule['suggestion'].strip()
         for line in suggestion.split('\n'):
             print(f"   {line}", file=sys.stderr)
 
     # Specific alternatives
     if 'alternatives' in rule:
-        print(f"\n✓ Safe Alternatives:", file=sys.stderr)
+        print("\n✓ Safe Alternatives:", file=sys.stderr)
         for alt in rule['alternatives']:
             print(f"   • {alt}", file=sys.stderr)
 
     print("="*70 + "\n", file=sys.stderr)
 
-def print_ask_message(rule: Dict, command: str) -> bool:
+def print_ask_message(rule: dict, command: str) -> bool:
     """Print confirmation prompt and get user response"""
     print("\n" + "="*70, file=sys.stderr)
 

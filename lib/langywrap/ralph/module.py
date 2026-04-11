@@ -35,7 +35,7 @@ Usage::
 
 from __future__ import annotations
 
-import copy
+import contextlib
 import inspect
 import logging
 import re
@@ -43,7 +43,7 @@ import subprocess
 import time
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from langywrap.ralph.context import build_full_prompt, build_orient_context
 from langywrap.ralph.state import CycleResult, RalphState
@@ -362,7 +362,7 @@ class Module:
     # Override in subclass:
     prompts: str = ""
     state: str = "ralph"
-    tasks_file: str = ""   # Override path for tasks.md (relative to project_dir)
+    tasks_file: str = ""  # Override path for tasks.md (relative to project_dir)
     progress_file: str = ""  # Override path for progress.md (relative to project_dir)
     scope: str = ""
     gates: list[str] = []
@@ -394,9 +394,7 @@ class Module:
         Called once per cycle. Use ``self.step_name()`` to execute steps,
         ``match()`` to classify cycle types, ``gate()`` to run quality checks.
         """
-        raise NotImplementedError(
-            f"{type(self).__name__} must implement forward()"
-        )
+        raise NotImplementedError(f"{type(self).__name__} must implement forward()")
 
     # -----------------------------------------------------------------------
     # Step execution (called by BoundStep.__call__)
@@ -511,12 +509,6 @@ class Module:
                 return output, False
 
             except Exception as exc:
-                err_str = str(exc).lower()
-                if any(kw in err_str for kw in ("rate limit", "429", "too many")):
-                    if attempt < max_attempts:
-                        self._log(f"  │   [{name}] Rate limited. Waiting 10m...")
-                        time.sleep(600)
-                        continue
                 self._log(f"  └── {name}: ERROR — {exc}\n")
                 output = f"# {name} ERROR\n{exc}\n"
                 self._outputs[name] = output
@@ -640,7 +632,7 @@ class ModuleRunner:
         self,
         module: Module,
         project_dir: Path,
-        router: Optional[ExecutionRouter] = None,
+        router: ExecutionRouter | None = None,
         *,
         budget: int = 10,
         throttle_utc: str = "",
@@ -699,8 +691,7 @@ class ModuleRunner:
         last_cycle = self.state.get_cycle_count()
         if last_cycle > 0 and not resume:
             raise RuntimeError(
-                f"State has {last_cycle} prior cycles. "
-                "Pass resume=True to continue."
+                f"State has {last_cycle} prior cycles. Pass resume=True to continue."
             )
 
         start = last_cycle + 1
@@ -719,9 +710,9 @@ class ModuleRunner:
 
             self._wait_if_peak_hours()
 
-            self._log(f"\n{'='*60}")
+            self._log(f"\n{'=' * 60}")
             self._log(f"Cycle {cycle_num}/{end}  ({pending} pending)")
-            self._log(f"{'='*60}")
+            self._log(f"{'=' * 60}")
 
             # Hygiene injection
             if (
@@ -731,7 +722,8 @@ class ModuleRunner:
             ):
                 gate_cmd = self.module.gates[0] if self.module.gates else ""
                 injected = self.state.inject_hygiene_task(
-                    cycle_num, quality_gate_cmd=gate_cmd,
+                    cycle_num,
+                    quality_gate_cmd=gate_cmd,
                 )
                 if injected:
                     self._log(f"  [hygiene] Injected for cycle {cycle_num}")
@@ -748,7 +740,9 @@ class ModuleRunner:
                             date=date.today().isoformat(),
                         )
                         injected = self.state.inject_periodic_task(
-                            cycle_num, marker=marker, content=rendered,
+                            cycle_num,
+                            marker=marker,
+                            content=rendered,
                         )
                         if injected:
                             self._log(f"  [{marker}] Injected for cycle {cycle_num}")
@@ -777,7 +771,9 @@ class ModuleRunner:
         }
 
         for name, sd in self.module._step_defs.items():
-            prompt_path = self.prompts_dir / sd.prompt if sd.prompt else self.prompts_dir / f"{name}.md"
+            prompt_path = (
+                self.prompts_dir / sd.prompt if sd.prompt else self.prompts_dir / f"{name}.md"
+            )
             if not prompt_path.exists():
                 for candidate in self.prompts_dir.glob(f"*_{name}*.md"):
                     prompt_path = candidate
@@ -826,7 +822,7 @@ class ModuleRunner:
             log.exception("forward() raised")
 
         # Collect results
-        for name, output in self.module._outputs.items():
+        for name, _output in self.module._outputs.items():
             out_path = self.state.step_output_path(name)
             if out_path.exists():
                 result.steps_completed[name] = out_path
@@ -861,15 +857,13 @@ class ModuleRunner:
 
         # Stage
         for path in self.module.git:
-            try:
+            with contextlib.suppress(subprocess.CalledProcessError):
                 subprocess.run(
                     ["git", "add", path],
                     cwd=self.project_dir,
                     capture_output=True,
                     check=True,
                 )
-            except subprocess.CalledProcessError:
-                pass
 
         # Secret scan
         secret_hit = self._scan_secrets()
@@ -931,7 +925,10 @@ class ModuleRunner:
             return None
 
         patterns = self.module.secrets or [
-            r"\.env$", r"credentials", r"secret", r"api_key",
+            r"\.env$",
+            r"credentials",
+            r"secret",
+            r"api_key",
         ]
         compiled = [re.compile(p, re.IGNORECASE) for p in patterns]
 
@@ -992,7 +989,8 @@ def load_module_config(project_dir: Path) -> Module | None:
     import importlib.util
 
     spec = importlib.util.spec_from_file_location(
-        f"_ralph_module_{project_dir.name}", ralph_py,
+        f"_ralph_module_{project_dir.name}",
+        ralph_py,
     )
     if spec is None or spec.loader is None:
         return None
@@ -1013,11 +1011,7 @@ def load_module_config(project_dir: Path) -> Module | None:
     # Find first Module subclass and instantiate it
     for attr_name in dir(mod):
         attr = getattr(mod, attr_name)
-        if (
-            isinstance(attr, type)
-            and issubclass(attr, Module)
-            and attr is not Module
-        ):
+        if isinstance(attr, type) and issubclass(attr, Module) and attr is not Module:
             return attr()
 
     return None

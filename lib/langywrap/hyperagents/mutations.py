@@ -6,6 +6,7 @@ using an LLM to analyze performance and propose intelligent changes).
 
 from __future__ import annotations
 
+import contextlib
 import copy
 import random
 import uuid
@@ -259,14 +260,10 @@ def _apply_meta_suggestion(config: dict[str, Any], parts: list[str]) -> None:
     if mutation_type == MutationType.SWAP_MODEL.value and key in routes:
         routes[key]["model"] = new_value
     elif mutation_type == MutationType.CHANGE_TIMEOUT.value and key in routes:
-        try:
+        with contextlib.suppress(ValueError):
             routes[key]["timeout_minutes"] = int(new_value)
-        except ValueError:
-            pass
     elif mutation_type == MutationType.SWAP_BACKEND.value and key in routes:
         routes[key]["backend"] = new_value
     elif mutation_type == MutationType.CHANGE_REVIEW_FREQUENCY.value:
-        try:
+        with contextlib.suppress(ValueError):
             config["review_every_n"] = int(new_value)
-        except ValueError:
-            pass

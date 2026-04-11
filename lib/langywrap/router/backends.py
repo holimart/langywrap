@@ -25,9 +25,40 @@ import time
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+# Literals checked against the full model text output.
+# Must be unambiguous API-error phrases — NOT generic words that could appear
+# in model-written prose (e.g. progress-note descriptions of past rate limits).
+_RATE_LIMIT_TEXT_LITERALS = (
+    # Claude Code / Anthropic surfaced messages.
+    "You've hit your limit",
+    "This request would exceed your account's rate limit. Please try again later.",
+    "Your account has hit a rate limit.",
+    # OpenCode source-level messages (verbose enough to be unambiguous).
+    "Free usage exceeded, subscribe to Go https://opencode.ai/go",
+    # Provider pass-through messages observed through OpenCode.
+    (
+        "Upstream error from Alibaba: Request rate increased too quickly. "
+        "To ensure system stability, please adjust your client logic to scale "
+        "requests more smoothly over time."
+    ),
+    "Too many requests, the rate limit is 8000000 tokens per minute.",
+    "concurrency limit exceeded for account, please retry later",
+)
+
+# Short/generic literals only matched against stderr / process error strings,
+# NOT against model-generated text (where they appear in historical prose).
+_RATE_LIMIT_ERROR_ONLY_LITERALS = (
+    "Too Many Requests",
+    "Rate Limited",
+)
+
+# Combined set for convenience — used when searching only the error field.
+_RATE_LIMIT_ALL_LITERALS = _RATE_LIMIT_TEXT_LITERALS + _RATE_LIMIT_ERROR_ONLY_LITERALS
 
 
 # ---------------------------------------------------------------------------
@@ -78,21 +109,21 @@ class BackendConfig:
     def __init__(
         self,
         type: Backend,
-        binary_path: Optional[str] = None,
-        api_key_source: Optional[str] = None,
-        env_overrides: Optional[Dict[str, str]] = None,
+        binary_path: str | None = None,
+        api_key_source: str | None = None,
+        env_overrides: dict[str, str] | None = None,
         timeout_seconds: int = 300,
-        extra_args: Optional[List[str]] = None,
-        execwrap_path: Optional[str] = None,
-        rtk_path: Optional[str] = None,
+        extra_args: list[str] | None = None,
+        execwrap_path: str | None = None,
+        rtk_path: str | None = None,
         stream_output: bool = False,
     ) -> None:
         self.type = type
         self.binary_path = binary_path
         self.api_key_source = api_key_source
-        self.env_overrides: Dict[str, str] = env_overrides or {}
+        self.env_overrides: dict[str, str] = env_overrides or {}
         self.timeout_seconds = timeout_seconds
-        self.extra_args: List[str] = extra_args or []
+        self.extra_args: list[str] = extra_args or []
         self.execwrap_path = execwrap_path
         self.rtk_path = rtk_path
         self.stream_output = stream_output
@@ -139,7 +170,7 @@ class SubagentResult:
     """Actual input tokens reported by the model (0 if not available)."""
     output_tokens: int = 0
     """Actual output tokens reported by the model (0 if not available)."""
-    files_accessed: List[str] = field(default_factory=list)
+    files_accessed: list[str] = field(default_factory=list)
     """Files read/written by tool calls during this step."""
 
     def __post_init__(self) -> None:
@@ -155,13 +186,48 @@ class SubagentResult:
 
     @property
     def rate_limited(self) -> bool:
-        return bool(
-            re.search(
-                r"rate.limit|hit your limit|too many requests|429",
-                self.text + self.error,
-                re.IGNORECASE,
-            )
-        )
+        return self.rate_limit_snippet != ""
+
+    @property
+    def rate_limit_snippet(self) -> str:
+        """Return the sentence/snippet that triggered rate-limit detection.
+
+        Scans the model's text output only against unambiguous API-error
+        phrases (``_RATE_LIMIT_TEXT_LITERALS``).  Short/generic phrases like
+        "Rate Limited" are checked **only** against ``self.error`` (process
+        stderr/error field) to avoid false positives when the model writes
+        progress notes that reference historical rate-limit events.
+        """
+
+        def _find(haystack: str, literals: tuple[str, ...]) -> str:
+            for literal in literals:
+                idx = haystack.lower().find(literal.lower())
+                if idx == -1:
+                    continue
+                start = idx
+                end = idx + len(literal)
+                line_start = haystack.rfind("\n", 0, start)
+                line_end = haystack.find("\n", end)
+                line_start = 0 if line_start == -1 else line_start + 1
+                if line_end == -1:
+                    line_end = len(haystack)
+                snippet = haystack[line_start:line_end].strip()
+                return (snippet or haystack[start:end].strip())[:500]
+            return ""
+
+        # Text output: only unambiguous, verbose API-error phrases.
+        if self.text:
+            hit = _find(self.text, _RATE_LIMIT_TEXT_LITERALS)
+            if hit:
+                return hit
+
+        # Error field: all literals including short generic ones.
+        if self.error:
+            hit = _find(self.error, _RATE_LIMIT_ALL_LITERALS)
+            if hit:
+                return hit
+
+        return ""
 
     @property
     def hung(self) -> bool:
@@ -186,7 +252,7 @@ class SubagentResult:
 # ---------------------------------------------------------------------------
 
 
-def _resolve_binary(binary_path: Optional[str], name: str) -> str:
+def _resolve_binary(binary_path: str | None, name: str) -> str:
     """Return an absolute path to the binary, raising if not found."""
     if binary_path:
         p = Path(binary_path)
@@ -196,12 +262,10 @@ def _resolve_binary(binary_path: Optional[str], name: str) -> str:
     found = shutil.which(name)
     if found:
         return found
-    raise FileNotFoundError(
-        f"{name} not found in PATH. Set binary_path in BackendConfig."
-    )
+    raise FileNotFoundError(f"{name} not found in PATH. Set binary_path in BackendConfig.")
 
 
-def _resolve_api_key(source: Optional[str]) -> Optional[str]:
+def _resolve_api_key(source: str | None) -> str | None:
     """Resolve an API key from an auth.json file path or environment variable name."""
     if source is None:
         return None
@@ -216,7 +280,7 @@ def _resolve_api_key(source: Optional[str]) -> Optional[str]:
     return os.environ.get(source)
 
 
-def _build_env(config: BackendConfig, extra: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+def _build_env(config: BackendConfig, extra: dict[str, str] | None = None) -> dict[str, str]:
     """Build the subprocess environment, merging overrides."""
     env = os.environ.copy()
     env.update(config.env_overrides)
@@ -225,18 +289,76 @@ def _build_env(config: BackendConfig, extra: Optional[Dict[str, str]] = None) ->
     return env
 
 
-def _prefix_execwrap(cmd: List[str], execwrap_path: Optional[str]) -> List[str]:
-    """Prepend execwrap to a command list when configured."""
+def _seed_opencode_auth(xdg_tmp: str) -> None:
+    """Populate temp XDG auth from known persistent opencode auth locations.
+
+    OpenCode stores provider/OAuth auth under XDG data directories. Ralph runs
+    each call with an isolated temporary ``XDG_DATA_HOME`` to avoid sqlite lock
+    contention, so we opportunistically merge any persistent auth.json files
+    into the temp directory. Missing or malformed files are ignored.
+    """
+    candidates: list[Path] = []
+
+    current_xdg = os.environ.get("XDG_DATA_HOME")
+    if current_xdg:
+        candidates.append(Path(current_xdg) / "opencode" / "auth.json")
+
+    candidates.append(Path.home() / ".local" / "share" / "opencode" / "auth.json")
+
+    snap_roots = [Path.home() / "snap" / "code", Path.home() / "snap" / "code-insiders"]
+    for snap_root in snap_roots:
+        if not snap_root.exists():
+            continue
+        snap_auths = sorted(snap_root.glob("*/opencode/auth.json"), reverse=True)
+        candidates.extend(snap_auths)
+
+    merged: dict[str, Any] = {}
+    for path in candidates:
+        if not path.exists() or not path.is_file():
+            continue
+        try:
+            data = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(data, dict):
+            merged.update(data)
+
+    if not merged:
+        return
+
+    auth_dir = Path(xdg_tmp) / "opencode"
+    auth_dir.mkdir(parents=True, exist_ok=True)
+    (auth_dir / "auth.json").write_text(json.dumps(merged), encoding="utf-8")
+
+
+def wrap_cmd(
+    cmd: list[str],
+    execwrap_path: str | None = None,
+    rtk_path: str | None = None,
+    *,
+    shell_mode: bool = False,
+) -> list[str]:
+    """Apply execwrap and/or RTK wrapping to a command.
+
+    execwrap supersedes RTK: it runs ``rtk rewrite`` internally on every shell
+    command it processes, so a separate outer RTK prefix is redundant.
+
+    shell_mode=False  (default) — execwrap launcher mode: ``[execwrap, cmd…]``
+    shell_mode=True             — execwrap shell mode:    ``[execwrap, -c, "cmd string"]``
+
+    When execwrap is absent, RTK is prepended directly.  The ``./`` prefix is
+    stripped from the first token so RTK's dispatcher sees a plain binary name
+    while all other arguments (including ``uv run``) are preserved.
+    """
     if execwrap_path and Path(execwrap_path).exists():
+        if shell_mode:
+            import shlex as _shlex
+
+            return [execwrap_path, "-c", _shlex.join(cmd)]
         return [execwrap_path] + cmd
-    return cmd
-
-
-def _prefix_rtk(cmd: List[str], config: "BackendConfig") -> List[str]:
-    """Prepend RTK output-compression wrapper when configured."""
-    rtk_path = config.rtk_path
     if rtk_path and Path(rtk_path).exists():
-        return [rtk_path, "--"] + cmd
+        first = cmd[0].lstrip("./") if cmd[0].startswith("./") else cmd[0]
+        return [rtk_path, first, *cmd[1:]]
     return cmd
 
 
@@ -257,7 +379,7 @@ class _StreamResult:
     duration: float
 
 
-def _log_stream_event(obj: Dict[str, Any]) -> None:
+def _log_stream_event(obj: dict[str, Any]) -> None:
     """Log a parsed stream-json event in a compact, human-readable form."""
     etype = obj.get("type", "?")
     subtype = obj.get("subtype", "")
@@ -276,22 +398,30 @@ def _log_stream_event(obj: Dict[str, Any]) -> None:
         content = msg.get("content", [])
         usage = msg.get("usage", {})
         out_tok = usage.get("output_tokens", "?")
-        # Show first 200 chars of text content
-        texts = []
-        tool_uses = 0
+        texts: list[str] = []
+        tool_names: list[str] = []
         for block in content:
             if block.get("type") == "text":
                 texts.append(block.get("text", ""))
             elif block.get("type") == "tool_use":
-                tool_uses += 1
-        preview = " ".join(texts)[:200]
-        if tool_uses:
+                tool_names.append(block.get("name", "?"))
+        preview = " ".join(texts)[:160]
+        # Blank line before each assistant turn for visual separation
+        if tool_names:
+            tools_line = "  tools:\n" + "\n".join(f"    • {t}" for t in tool_names)
             logger.debug(
-                "[stream] assistant — %d tool_use(s), %s output_tokens, text: %s",
-                tool_uses, out_tok, preview or "(none)",
+                "\n[stream] assistant — %d tool_use(s), %s tokens  text: %s\n%s",
+                len(tool_names),
+                out_tok,
+                preview or "(none)",
+                tools_line,
             )
         else:
-            logger.debug("[stream] assistant — %s output_tokens: %s", out_tok, preview)
+            logger.debug(
+                "\n[stream] assistant — %s tokens: %s",
+                out_tok,
+                preview,
+            )
 
     elif etype == "tool_result":
         tool_id = obj.get("tool_use_id", "?")[:12]
@@ -304,8 +434,11 @@ def _log_stream_event(obj: Dict[str, Any]) -> None:
         turns = obj.get("num_turns", "?")
         stop = obj.get("stop_reason", "?")
         logger.debug(
-            "[stream] result — %s turns, stop=%s, cost=$%s, %sms",
-            turns, stop, cost, dur,
+            "\n[stream] ── result ── %s turns  stop=%s  cost=$%s  %sms",
+            turns,
+            stop,
+            cost,
+            dur,
         )
 
     elif etype == "rate_limit_event":
@@ -315,17 +448,16 @@ def _log_stream_event(obj: Dict[str, Any]) -> None:
         logger.debug("[stream] rate_limit — status=%s resets=%s", status, resets)
 
     else:
-        # Unknown event — show type and first 150 chars
-        logger.debug("[stream] %s.%s: %.150s", etype, subtype, json.dumps(obj))
+        # Unknown event — show type and first 120 chars of JSON
+        logger.debug("[stream] %s.%s: %.120s", etype, subtype, json.dumps(obj))
 
 
-def _print_stream_text(obj: Dict[str, Any]) -> None:
+def _print_stream_text(obj: dict[str, Any]) -> None:
     """Print human-readable text from a stream-json event to stdout.
 
     Handles both claude (stream-json) and opencode (--format json) event shapes.
     Only prints text content; ignores tool-use bookkeeping.
     """
-    import sys
 
     etype = obj.get("type", "")
 
@@ -352,13 +484,23 @@ def _print_stream_text(obj: Dict[str, Any]) -> None:
 
 
 # File-access tool names (both claude and opencode naming conventions).
-_FILE_TOOLS = frozenset({
-    "Read", "Write", "Edit", "MultiEdit", "NotebookEdit",
-    "read", "write", "edit", "view", "str_replace_based_edit_tool",
-})
+_FILE_TOOLS = frozenset(
+    {
+        "Read",
+        "Write",
+        "Edit",
+        "MultiEdit",
+        "NotebookEdit",
+        "read",
+        "write",
+        "edit",
+        "view",
+        "str_replace_based_edit_tool",
+    }
+)
 
 
-def _extract_stream_stats(raw: bytes) -> tuple[int, int, List[str]]:
+def _extract_stream_stats(raw: bytes) -> tuple[int, int, list[str]]:
     """Parse a stream-json / opencode JSON byte stream and extract usage stats.
 
     Returns:
@@ -370,7 +512,7 @@ def _extract_stream_stats(raw: bytes) -> tuple[int, int, List[str]]:
     """
     input_tokens = 0
     output_tokens = 0
-    files: List[str] = []
+    files: list[str] = []
     seen_files: set[str] = set()
 
     for line in raw.decode(errors="replace").splitlines():
@@ -383,6 +525,7 @@ def _extract_stream_stats(raw: bytes) -> tuple[int, int, List[str]]:
             continue
 
         etype = obj.get("type", "")
+        part = obj.get("part", {}) if isinstance(obj.get("part"), dict) else {}
 
         # Final result event — has total usage for the session.
         if etype == "result":
@@ -390,6 +533,14 @@ def _extract_stream_stats(raw: bytes) -> tuple[int, int, List[str]]:
             if usage:
                 input_tokens = usage.get("input_tokens", input_tokens)
                 output_tokens = usage.get("output_tokens", output_tokens)
+            continue
+
+        # OpenCode step-finish event — carries the clearest token totals.
+        if etype == "step_finish":
+            tokens = part.get("tokens", {}) if isinstance(part, dict) else {}
+            if tokens:
+                input_tokens = max(input_tokens, int(tokens.get("input", 0) or 0))
+                output_tokens = max(output_tokens, int(tokens.get("output", 0) or 0))
             continue
 
         # Assistant turn — usage + tool_use blocks.
@@ -414,16 +565,33 @@ def _extract_stream_stats(raw: bytes) -> tuple[int, int, List[str]]:
                         seen_files.add(path)
                         files.append(path)
 
+        # OpenCode tool event with nested part/state input.
+        if etype == "tool_use":
+            tool_name = part.get("tool", "") if isinstance(part, dict) else ""
+            if tool_name not in _FILE_TOOLS:
+                continue
+            state = part.get("state", {}) if isinstance(part, dict) else {}
+            inp = state.get("input", {}) if isinstance(state, dict) else {}
+            path = (
+                inp.get("filePath")
+                or inp.get("file_path")
+                or inp.get("path")
+                or inp.get("target_file")
+            )
+            if path and path not in seen_files:
+                seen_files.add(path)
+                files.append(path)
+
     return input_tokens, output_tokens, files
 
 
 def _run_with_idle_watchdog(
-    cmd: List[str],
+    cmd: list[str],
     *,
-    env: Dict[str, str],
+    env: dict[str, str],
     timeout: int,
     idle_hang_seconds: int = _IDLE_HANG_SECONDS,
-    stdin_data: Optional[bytes] = None,
+    stdin_data: bytes | None = None,
     use_setsid: bool = False,
     stream_output: bool = False,
 ) -> _StreamResult:
@@ -452,7 +620,7 @@ def _run_with_idle_watchdog(
         process-group isolation — same as the original OpenCode backend.
     """
     t0 = time.monotonic()
-    chunks: List[bytes] = []
+    chunks: list[bytes] = []
     last_byte_time = time.monotonic()
     lock = threading.Lock()
     idle_killed = False
@@ -468,8 +636,11 @@ def _run_with_idle_watchdog(
         )
     except Exception as exc:
         return _StreamResult(
-            raw=b"", exit_code=1, error=str(exc),
-            idle_timeout=False, duration=time.monotonic() - t0,
+            raw=b"",
+            exit_code=1,
+            error=str(exc),
+            idle_timeout=False,
+            duration=time.monotonic() - t0,
         )
 
     # -- Reader thread: drains stdout into chunks[] --------------------------
@@ -498,7 +669,8 @@ def _run_with_idle_watchdog(
                         _log_stream_event(obj)
                 except (json.JSONDecodeError, ValueError):
                     if logger.isEnabledFor(logging.DEBUG):
-                        logger.debug("[stream] %s", line)
+                        # Truncate: raw/binary/garbled lines are rarely useful in full
+                        logger.debug("[stream] (raw) %.120s", line)
         proc.stdout.close()
 
     reader_thread = threading.Thread(target=_reader, daemon=True)
@@ -544,12 +716,15 @@ def _run_with_idle_watchdog(
             if idle_secs > 10:
                 logger.info(
                     "[watchdog] %ds elapsed, %dB output, idle %ds",
-                    elapsed, cur_bytes, int(idle_secs),
+                    elapsed,
+                    cur_bytes,
+                    int(idle_secs),
                 )
             else:
                 logger.info(
                     "[watchdog] %ds elapsed, %dB output, receiving data",
-                    elapsed, cur_bytes,
+                    elapsed,
+                    cur_bytes,
                 )
             last_progress_log = now
 
@@ -558,7 +733,8 @@ def _run_with_idle_watchdog(
             idle_killed = True
             logger.info(
                 "Idle watchdog: no output for %ds (threshold %ds) — killing process",
-                int(idle_secs), idle_hang_seconds,
+                int(idle_secs),
+                idle_hang_seconds,
             )
             _kill_proc(proc, use_setsid)
             break
@@ -632,7 +808,7 @@ def _extract_text_from_stream_json(raw: bytes) -> str:
             return obj["result"]
 
     # Pass 2: concatenate assistant message text blocks
-    parts: List[str] = []
+    parts: list[str] = []
     for line in lines:
         line = line.strip()
         if not line:
@@ -679,26 +855,33 @@ class ClaudeBackend:
         self._binary = _resolve_binary(config.binary_path, "claude")
 
     def run(
-        self, prompt: str, model: str, timeout: int, *, tools: Optional[List[str]] = None,
+        self,
+        prompt: str,
+        model: str,
+        timeout: int,
+        *,
+        tools: list[str] | None = None,
     ) -> SubagentResult:
         effective_timeout = min(timeout, self.config.timeout_seconds)
-        tool_args: List[str] = []
+        tool_args: list[str] = []
         if tools:
             tool_args = ["--allowedTools", ",".join(tools)]
-        cmd = _prefix_execwrap(
+        cmd = wrap_cmd(
             [
                 self._binary,
-                "--model", model,
+                "--model",
+                model,
                 "--dangerously-skip-permissions",
                 "--print",
-                "--output-format", "stream-json",
+                "--output-format",
+                "stream-json",
                 "--verbose",
                 *tool_args,
                 *self.config.extra_args,
             ],
             self.config.execwrap_path,
+            self.config.rtk_path,
         )
-        cmd = _prefix_rtk(cmd, self.config)
         env = _build_env(
             self.config,
             {
@@ -767,23 +950,32 @@ class OpenCodeBackend:
         )
 
     def run(
-        self, prompt: str, model: str, timeout: int, *, tools: Optional[List[str]] = None,
+        self,
+        prompt: str,
+        model: str,
+        timeout: int,
+        *,
+        tools: list[str] | None = None,
     ) -> SubagentResult:
         effective_timeout = min(timeout, self.config.timeout_seconds)
 
         xdg_tmp = tempfile.mkdtemp(prefix="opencode_")
         try:
-            cmd = _prefix_execwrap(
+            _seed_opencode_auth(xdg_tmp)
+
+            cmd = wrap_cmd(
                 [
                     self._binary,
                     "run",
-                    "--model", model,
-                    "--format", "json",
+                    "--model",
+                    model,
+                    "--format",
+                    "json",
                     *self.config.extra_args,
                 ],
                 self.config.execwrap_path,
+                self.config.rtk_path,
             )
-            cmd = _prefix_rtk(cmd, self.config)
 
             env = _build_env(
                 self.config,
@@ -822,6 +1014,7 @@ class OpenCodeBackend:
         finally:
             # Clean up temp XDG dir
             import shutil as _shutil
+
             _shutil.rmtree(xdg_tmp, ignore_errors=True)
 
     @staticmethod
@@ -834,7 +1027,7 @@ class OpenCodeBackend:
           {"type":"assistant","message":{"content":[{"type":"text","text":"..."}]}}
         """
         lines = raw.decode(errors="replace").splitlines()
-        parts: List[str] = []
+        parts: list[str] = []
         for line in lines:
             line = line.strip()
             if not line.startswith("{"):
@@ -887,7 +1080,12 @@ class OpenRouterBackend:
         )
 
     def run(
-        self, prompt: str, model: str, timeout: int, *, tools: Optional[List[str]] = None,
+        self,
+        prompt: str,
+        model: str,
+        timeout: int,
+        *,
+        tools: list[str] | None = None,
     ) -> SubagentResult:
         effective_timeout = min(timeout, self.config.timeout_seconds)
         t0 = time.monotonic()
@@ -964,7 +1162,12 @@ class DirectAPIBackend:
         self._api_key = _resolve_api_key(config.api_key_source)
 
     def run(
-        self, prompt: str, model: str, timeout: int, *, tools: Optional[List[str]] = None,
+        self,
+        prompt: str,
+        model: str,
+        timeout: int,
+        *,
+        tools: list[str] | None = None,
     ) -> SubagentResult:
         effective_timeout = min(timeout, self.config.timeout_seconds)
         t0 = time.monotonic()
@@ -1000,10 +1203,8 @@ class DirectAPIBackend:
     def _run_anthropic(self, prompt: str, model: str, timeout: int) -> str:
         try:
             import anthropic  # type: ignore
-        except ImportError:
-            raise ImportError(
-                "Anthropic SDK not installed. Run: pip install anthropic"
-            )
+        except ImportError as err:
+            raise ImportError("Anthropic SDK not installed. Run: pip install anthropic") from err
 
         key = self._api_key or os.environ.get("ANTHROPIC_API_KEY", "")
         client = anthropic.Anthropic(api_key=key, timeout=timeout)
@@ -1017,10 +1218,8 @@ class DirectAPIBackend:
     def _run_openai(self, prompt: str, model: str, timeout: int) -> str:
         try:
             import openai  # type: ignore
-        except ImportError:
-            raise ImportError(
-                "OpenAI SDK not installed. Run: pip install openai"
-            )
+        except ImportError as err:
+            raise ImportError("OpenAI SDK not installed. Run: pip install openai") from err
 
         key = self._api_key or os.environ.get("OPENAI_API_KEY", "")
         client = openai.OpenAI(api_key=key, timeout=timeout)
@@ -1068,7 +1267,12 @@ class MockBackend:
         self.config = config
 
     def run(
-        self, prompt: str, model: str, timeout: int, *, tools: Optional[List[str]] = None,
+        self,
+        prompt: str,
+        model: str,
+        timeout: int,
+        *,
+        tools: list[str] | None = None,
     ) -> SubagentResult:
         effective_timeout = min(timeout, self.config.timeout_seconds)
 
@@ -1078,7 +1282,7 @@ class MockBackend:
 
         if mock_command:
             # Run an actual bash command (for security testing)
-            cmd: List[str] = ["bash", "-c", mock_command]
+            cmd: list[str] = ["bash", "-c", mock_command]
         elif mock_response:
             # Echo a fixed response
             cmd = ["bash", "-c", f"echo {json.dumps(mock_response)}"]
@@ -1087,9 +1291,7 @@ class MockBackend:
             first_line = prompt.split("\n")[0][:200]
             cmd = ["bash", "-c", f"echo 'MOCK_RESPONSE: {json.dumps(first_line)}'"]
 
-        # Apply execwrap if configured — this is the key: security layers fire
-        cmd = _prefix_execwrap(cmd, self.config.execwrap_path)
-        cmd = _prefix_rtk(cmd, self.config)
+        cmd = wrap_cmd(cmd, self.config.execwrap_path, self.config.rtk_path)
 
         env = _build_env(self.config)
 
@@ -1167,7 +1369,9 @@ class MockBackend:
 # ---------------------------------------------------------------------------
 
 
-def create_backend(config: BackendConfig) -> "ClaudeBackend | OpenCodeBackend | OpenRouterBackend | DirectAPIBackend | MockBackend":
+def create_backend(
+    config: BackendConfig,
+) -> ClaudeBackend | OpenCodeBackend | OpenRouterBackend | DirectAPIBackend | MockBackend:
     """Instantiate the correct backend class from a BackendConfig."""
     mapping = {
         Backend.CLAUDE: ClaudeBackend,

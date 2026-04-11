@@ -37,11 +37,9 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-
 # ---------------------------------------------------------------------------
 # Model alias resolution (shared with config_v2)
 # ---------------------------------------------------------------------------
-
 from langywrap.ralph.aliases import BUILTIN_ALIASES as _MODEL_ALIASES
 
 
@@ -56,11 +54,15 @@ def _resolve_model(name: str, extra: dict[str, str] | None = None) -> str:
 
 
 def _infer_backend(model: str) -> str:
-    """Infer backend from model prefix."""
-    for prefix in ("nvidia/", "moonshotai/", "openai/", "mistral/", "google/"):
-        if model.startswith(prefix):
-            return "opencode"
-    return "claude"
+    """Infer backend from model prefix.
+
+    Claude models (claude-* prefix) always use claudecode.
+    Everything else — NVIDIA NIM, OpenRouter, OpenAI, Mistral, Google, etc —
+    uses opencode.
+    """
+    if model.startswith("claude-"):
+        return "claude"
+    return "opencode"
 
 
 # ---------------------------------------------------------------------------
@@ -210,6 +212,9 @@ class Step(BaseModel):
     fail_fast: bool = False
     """If True and step fails, skip remaining steps in cycle."""
 
+    confirmation_token: str = ""
+    """Token that must appear in the step output to mark it confirmed."""
+
     engine: str = "auto"
     """Force engine: 'claude', 'opencode', or 'auto' (router decides)."""
 
@@ -263,6 +268,8 @@ class Step(BaseModel):
     """HyperAgent-togglable. If False, step is skipped."""
 
     def __init__(self, name: str = "", **kwargs: Any) -> None:
+        if "token" in kwargs and "confirmation_token" not in kwargs:
+            kwargs["confirmation_token"] = kwargs.pop("token")
         super().__init__(name=name, **kwargs)
 
 
@@ -399,6 +406,9 @@ class Pipeline(BaseModel):
     throttle: Throttle | None = None
     """Peak-hour throttle."""
 
+    throttle_skip_backends: list[str] = Field(default_factory=list)
+    """Backend names that bypass peak-hour throttling."""
+
     git: list[str] = Field(default_factory=list)
     """Git paths to stage after each cycle."""
 
@@ -425,17 +435,29 @@ class Pipeline(BaseModel):
     scope: str = ""
     """Scope restriction injected into every prompt."""
 
+    plan_must_contain: list[str] = Field(default_factory=list)
+    """Literal substrings that must appear in plan.md after orient."""
+
+    plan_must_match: list[str] = Field(default_factory=list)
+    """Regex patterns that must match plan.md after orient."""
+
+    plan_require_current_cycle: bool = False
+    """Require plan.md to mention the current cycle number."""
+
     budget: int = 10
     """Default max cycles."""
 
     verbose: bool = True
     """Emit progress logs."""
 
+    max_consecutive_failed_cycles: int = 3
+    """Stop after N consecutive failed cycles."""
+
     # -----------------------------------------------------------------------
     # Conversion to RalphConfig (bridge to runner)
     # -----------------------------------------------------------------------
 
-    def to_ralph_config(self, project_dir: Path) -> "RalphConfig":
+    def to_ralph_config(self, project_dir: Path) -> RalphConfig:  # noqa: F821
         """Convert this Pipeline to a RalphConfig for the runner.
 
         This is the bridge: Python pipeline → internal config objects.
@@ -445,11 +467,12 @@ class Pipeline(BaseModel):
             QualityGateConfig,
             RalphConfig,
             StepConfig,
-            StepRole,
         )
 
         project_dir = project_dir.resolve()
-        prompts_dir = project_dir / self.prompts if self.prompts else project_dir / self.state / "prompts"
+        prompts_dir = (
+            project_dir / self.prompts if self.prompts else project_dir / self.state / "prompts"
+        )
         resolve = lambda name: _resolve_model(name, self.aliases)  # noqa: E731
 
         step_configs: list[StepConfig] = []
@@ -466,9 +489,7 @@ class Pipeline(BaseModel):
                 # Loop → expand to steps with retry logic
                 # For now, loops are converted to their inner steps
                 # with the loop's retry semantics encoded
-                step_configs.extend(
-                    self._loop_to_step_configs(item, prompts_dir)
-                )
+                step_configs.extend(self._loop_to_step_configs(item, prompts_dir))
                 continue
 
             step = item
@@ -490,9 +511,7 @@ class Pipeline(BaseModel):
             if step.per_cycle:
                 for ct_name, overrides in step.per_cycle.items():
                     # Find or create the rule
-                    existing = next(
-                        (r for r in cycle_type_rules if r["name"] == ct_name), None
-                    )
+                    existing = next((r for r in cycle_type_rules if r["name"] == ct_name), None)
                     if existing is None:
                         existing = {"name": ct_name, "pattern": ""}
                         cycle_type_rules.append(existing)
@@ -513,11 +532,13 @@ class Pipeline(BaseModel):
                 hygiene_every_n = p.every
             elif p.builtin == "lookback":
                 marker = p.marker or "lookback"
-                periodic_tasks.append({
-                    "every": p.every,
-                    "marker": marker,
-                    "template": p.template,
-                })
+                periodic_tasks.append(
+                    {
+                        "every": p.every,
+                        "marker": marker,
+                        "template": p.template,
+                    }
+                )
             elif p.step:
                 # Adversarial or custom periodic step
                 if p.step.name == "adversarial":
@@ -533,18 +554,22 @@ class Pipeline(BaseModel):
                     step_configs.append(adv_sc)
                 else:
                     # Generic periodic step
-                    periodic_tasks.append({
-                        "every": p.every,
-                        "marker": p.marker or p.step.name,
-                        "template": p.template,
-                    })
+                    periodic_tasks.append(
+                        {
+                            "every": p.every,
+                            "marker": p.marker or p.step.name,
+                            "template": p.template,
+                        }
+                    )
             elif p.template:
                 # Template-only periodic (like lookback without builtin flag)
-                periodic_tasks.append({
-                    "every": p.every,
-                    "marker": p.marker or "periodic",
-                    "template": p.template,
-                })
+                periodic_tasks.append(
+                    {
+                        "every": p.every,
+                        "marker": p.marker or "periodic",
+                        "template": p.template,
+                    }
+                )
 
         # --- Gates ---
         primary_gate = None
@@ -563,11 +588,13 @@ class Pipeline(BaseModel):
         # Also collect step-level gates as additional gates
         for item in self.steps:
             if isinstance(item, Step) and item.gate:
-                extra_gates.append(QualityGateConfig(
-                    command=item.gate.command,
-                    timeout_minutes=item.gate.timeout,
-                    required=item.gate.required,
-                ))
+                extra_gates.append(
+                    QualityGateConfig(
+                        command=item.gate.command,
+                        timeout_minutes=item.gate.timeout,
+                        required=item.gate.required,
+                    )
+                )
 
         # --- Throttle ---
         throttle_start = None
@@ -598,10 +625,15 @@ class Pipeline(BaseModel):
             scope_restriction=self.scope,
             secret_patterns=self.secrets,
             verbose=self.verbose,
+            max_consecutive_failed_cycles=self.max_consecutive_failed_cycles,
             throttle_utc_start=throttle_start,
             throttle_utc_end=throttle_end,
             throttle_weekdays_only=throttle_weekdays,
+            throttle_skip_backends=self.throttle_skip_backends,
             cycle_type_rules=cycle_type_rules,
+            plan_must_contain=self.plan_must_contain,
+            plan_must_match=self.plan_must_match,
+            plan_require_current_cycle=self.plan_require_current_cycle,
             tasks_file=Path(self.tasks_file) if self.tasks_file else None,
             progress_file=Path(self.progress_file) if self.progress_file else None,
         )
@@ -610,7 +642,7 @@ class Pipeline(BaseModel):
     # RouteConfig generation (for ExecutionRouter)
     # -----------------------------------------------------------------------
 
-    def to_route_config(self, project_dir: Path) -> "RouteConfig | None":
+    def to_route_config(self, project_dir: Path) -> RouteConfig | None:  # noqa: F821
         """Build a RouteConfig from step model definitions.
 
         Returns None if the router module is not available.
@@ -620,7 +652,6 @@ class Pipeline(BaseModel):
                 Backend,
                 RouteConfig,
                 RouteRule,
-                StepRole as RouterStepRole,
             )
         except ImportError:
             return None
@@ -710,7 +741,7 @@ class Pipeline(BaseModel):
 
         return genome
 
-    def apply_overrides(self, overrides: dict[str, Any]) -> "Pipeline":
+    def apply_overrides(self, overrides: dict[str, Any]) -> Pipeline:
         """Apply HyperAgent variant overrides (genome patches) to this pipeline.
 
         Returns a new Pipeline with the overrides applied.
@@ -725,6 +756,7 @@ class Pipeline(BaseModel):
             }
         """
         import copy
+
         new = copy.deepcopy(self)
 
         for key, value in overrides.items():
@@ -754,7 +786,8 @@ class Pipeline(BaseModel):
 
             # Check periodic steps
             for i, p in enumerate(new.periodic):
-                if p.step and f"periodic.{p.step.name}" == key.split(".")[0] + "." + key.split(".")[1]:
+                key_prefix = key.split(".")[0] + "." + key.split(".")[1]
+                if p.step and f"periodic.{p.step.name}" == key_prefix:
                     if len(parts) > 1 and parts[1] == "every":
                         new.periodic[i] = p.model_copy(update={"every": value})
                     elif len(parts) > 1 and parts[1] == "model" and p.step:
@@ -767,9 +800,9 @@ class Pipeline(BaseModel):
     # Internal helpers
     # -----------------------------------------------------------------------
 
-    def _step_to_step_config(self, step: Step, prompts_dir: Path) -> "StepConfig":
+    def _step_to_step_config(self, step: Step, prompts_dir: Path) -> StepConfig:  # noqa: F821
         """Convert a Step to a StepConfig."""
-        from langywrap.ralph.config import StepConfig, StepRole
+        from langywrap.ralph.config import StepConfig
 
         resolve = lambda name: _resolve_model(name, self.aliases)  # noqa: E731
         model_id = resolve(step.model)
@@ -815,6 +848,7 @@ class Pipeline(BaseModel):
             prompt_template=prompt_path,
             role=role,
             timeout_minutes=step.timeout,
+            confirmation_token=step.confirmation_token,
             model=model_id,
             tools=tools,
             engine=step.engine,
@@ -833,9 +867,7 @@ class Pipeline(BaseModel):
             every_n=step.every,
         )
 
-    def _loop_to_step_configs(
-        self, loop: Loop, prompts_dir: Path
-    ) -> list["StepConfig"]:
+    def _loop_to_step_configs(self, loop: Loop, prompts_dir: Path) -> list[StepConfig]:  # noqa: F821
         """Convert a Loop to StepConfig list.
 
         The loop's inner steps become regular pipeline steps. The loop's
@@ -851,12 +883,14 @@ class Pipeline(BaseModel):
                 configs.append(sc)
         return configs
 
-    def _step_to_route_rule(self, step: Step, seen: set[str]) -> "RouteRule | None":
+    def _step_to_route_rule(self, step: Step, seen: set[str]) -> RouteRule | None:  # noqa: F821
         """Convert a Step to a RouteRule for the ExecutionRouter."""
         try:
             from langywrap.router.config import (
                 Backend,
                 RouteRule,
+            )
+            from langywrap.router.config import (
                 StepRole as RouterStepRole,
             )
         except ImportError:
@@ -901,20 +935,22 @@ class Pipeline(BaseModel):
 # Role inference
 # ---------------------------------------------------------------------------
 
-_ROLE_ALIASES: dict[str, "StepRole"] = {}
+_ROLE_ALIASES: dict[str, StepRole] = {}  # noqa: F821
 
 
-def _infer_role(name: str) -> "StepRole":
+def _infer_role(name: str) -> StepRole:  # noqa: F821
     """Infer StepRole from step name."""
     from langywrap.ralph.config import StepRole
 
     # Lazy init aliases
     if not _ROLE_ALIASES:
-        _ROLE_ALIASES.update({
-            "validate": StepRole.CRITIC,
-            "adversarial": StepRole.CRITIC,
-            "review": StepRole.REVIEW,
-        })
+        _ROLE_ALIASES.update(
+            {
+                "validate": StepRole.CRITIC,
+                "adversarial": StepRole.CRITIC,
+                "review": StepRole.REVIEW,
+            }
+        )
 
     name_lower = name.lower()
     if name_lower in _ROLE_ALIASES:
@@ -958,7 +994,8 @@ def load_pipeline_config(project_dir: Path) -> Pipeline | None:
     import importlib.util
 
     spec = importlib.util.spec_from_file_location(
-        f"_ralph_config_{project_dir.name}", ralph_py,
+        f"_ralph_config_{project_dir.name}",
+        ralph_py,
     )
     if spec is None or spec.loader is None:
         return None

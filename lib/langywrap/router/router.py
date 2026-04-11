@@ -30,8 +30,8 @@ import logging
 import threading
 import time
 from collections import defaultdict
-from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple, Union
+from dataclasses import dataclass
+from typing import Any
 
 from .backends import (
     Backend,
@@ -86,7 +86,7 @@ _HANG_BACKOFF_MAX = 300  # cap per wait
 _HEARTBEAT_INTERVAL = 60
 
 # Rough USD cost per 1K tokens (very approximate, for budget tracking only)
-_COST_PER_1K_TOKENS: Dict[str, float] = {
+_COST_PER_1K_TOKENS: dict[str, float] = {
     # Claude family (input+output blended)
     "claude-haiku": 0.00025,
     "claude-sonnet": 0.003,
@@ -163,9 +163,9 @@ class _HeartbeatWatcher:
         self._step_name = step_name
         self._interval = interval
         self._stop = threading.Event()
-        self._thread: Optional[threading.Thread] = None
+        self._thread: threading.Thread | None = None
 
-    def __enter__(self) -> "_HeartbeatWatcher":
+    def __enter__(self) -> _HeartbeatWatcher:
         self._thread = threading.Thread(target=self._beat, daemon=True)
         self._thread.start()
         return self
@@ -204,14 +204,14 @@ class ExecutionRouter:
 
     def __init__(
         self,
-        config: Optional[RouteConfig] = None,
-        backends: Optional[Dict[Backend, BackendConfig]] = None,
+        config: RouteConfig | None = None,
+        backends: dict[Backend, BackendConfig] | None = None,
         rate_limit_backoff_seconds: int = _RATE_LIMIT_BACKOFF_SECONDS,
     ) -> None:
         self._config = config or DEFAULT_ROUTE_CONFIG
-        self._backends: Dict[Backend, BackendConfig] = backends or {}
+        self._backends: dict[Backend, BackendConfig] = backends or {}
         self._rate_limit_backoff = rate_limit_backoff_seconds
-        self._stats: Dict[str, _ModelStats] = defaultdict(_ModelStats)
+        self._stats: dict[str, _ModelStats] = defaultdict(_ModelStats)
         self._budget_usd: float = 0.0
         self._lock = threading.Lock()
 
@@ -219,7 +219,7 @@ class ExecutionRouter:
     # Public API
     # ------------------------------------------------------------------
 
-    def route(self, role: StepRole, context: Optional[Dict[str, Any]] = None) -> RouteRule:
+    def route(self, role: StepRole, context: dict[str, Any] | None = None) -> RouteRule:
         """
         Select the best RouteRule for ``role`` given the current ``context``.
 
@@ -263,12 +263,12 @@ class ExecutionRouter:
         self,
         role: StepRole,
         prompt: str,
-        context: Optional[Dict[str, Any]] = None,
+        context: dict[str, Any] | None = None,
         *,
-        timeout_minutes: Optional[int] = None,
-        model: Optional[str] = None,
-        tools: Optional[Union[str, List[str]]] = None,
-        engine: Optional[str] = None,
+        timeout_minutes: int | None = None,
+        model: str | None = None,
+        tools: str | list[str] | None = None,
+        engine: str | None = None,
         abort_on_hang: bool = False,
     ) -> SubagentResult:
         """
@@ -313,10 +313,15 @@ class ExecutionRouter:
             else:
                 logger.warning("Unknown engine %r, ignoring override", engine)
 
+        # Claude models always run on claudecode regardless of engine override.
+        # haiku/opus/sonnet aliases resolve to claude-* before reaching here.
+        if _infer_backend_from_model(rule.model) == Backend.CLAUDE:
+            rule = rule.model_copy(update={"backend": Backend.CLAUDE})
+
         model_chain = [rule.model] + list(rule.retry_models)
         max_attempts = rule.retry_max + 1  # first attempt + retries
 
-        last_result: Optional[SubagentResult] = None
+        last_result: SubagentResult | None = None
         attempt = 0  # total attempts (across all models)
         model_idx = 0  # position in model_chain
         hang_streak = 0  # consecutive hangs on current model
@@ -342,7 +347,11 @@ class ExecutionRouter:
             backend = create_backend(backend_cfg)
             logger.info(
                 "[%s] attempt %d/%d — model=%s backend=%s",
-                role.value, attempt + 1, max_attempts, model, model_backend.value,
+                role.value,
+                attempt + 1,
+                max_attempts,
+                model,
+                model_backend.value,
             )
 
             # Parse tools from comma-separated string if needed
@@ -370,9 +379,12 @@ class ExecutionRouter:
             # Check rate limit BEFORE ok — a model can return exit_code=0 while
             # the response body contains "You've hit your limit" (NVIDIA/Kimi).
             if result.rate_limited:
+                snippet = result.rate_limit_snippet or "<no snippet captured>"
                 logger.warning(
-                    "[%s] Rate limited (detected in output). Waiting %ds…",
-                    role.value, self._rate_limit_backoff,
+                    "[%s] Rate limited (detected in output: %r). Waiting %ds…",
+                    role.value,
+                    snippet,
+                    self._rate_limit_backoff,
                 )
                 time.sleep(self._rate_limit_backoff)
                 attempt += 1
@@ -381,7 +393,10 @@ class ExecutionRouter:
             if result.ok:
                 logger.info(
                     "[%s] completed — model=%s tokens≈%d duration=%.1fs",
-                    role.value, model, result.token_estimate, result.duration_seconds,
+                    role.value,
+                    model,
+                    result.token_estimate,
+                    result.duration_seconds,
                 )
                 return result
 
@@ -391,7 +406,10 @@ class ExecutionRouter:
                     logger.warning(
                         "[%s] API hang on %s (%s, %dB output). "
                         "abort_on_hang=True — returning failure immediately.",
-                        role.value, model, hang_kind, len(result.raw_output),
+                        role.value,
+                        model,
+                        hang_kind,
+                        len(result.raw_output),
                     )
                     return result
                 # Default: retry indefinitely on same model — do NOT advance
@@ -405,8 +423,12 @@ class ExecutionRouter:
                 logger.warning(
                     "[%s] API hang on %s (%s, %dB output). "
                     "Retrying same model after %ds backoff… (hang #%d)",
-                    role.value, model, hang_kind,
-                    len(result.raw_output), backoff, hang_streak,
+                    role.value,
+                    model,
+                    hang_kind,
+                    len(result.raw_output),
+                    backoff,
+                    hang_streak,
                 )
                 time.sleep(backoff)
                 continue
@@ -415,9 +437,12 @@ class ExecutionRouter:
             hang_streak = 0
 
             if result.rate_limited:
+                snippet = result.rate_limit_snippet or "<no snippet captured>"
                 logger.warning(
-                    "[%s] Rate limited. Waiting %ds…",
-                    role.value, self._rate_limit_backoff,
+                    "[%s] Rate limited (detected in output: %r). Waiting %ds…",
+                    role.value,
+                    snippet,
+                    self._rate_limit_backoff,
                 )
                 time.sleep(self._rate_limit_backoff)
                 attempt += 1
@@ -427,7 +452,8 @@ class ExecutionRouter:
                 # Genuine timeout (had substantial output) — don't retry
                 logger.warning(
                     "[%s] Genuine timeout (%dB output). Not retrying.",
-                    role.value, len(result.raw_output),
+                    role.value,
+                    len(result.raw_output),
                 )
                 break
 
@@ -435,37 +461,42 @@ class ExecutionRouter:
             combined = (result.error + " " + result.text).lower()
             if "may not exist" in combined or "you may not have access" in combined:
                 logger.error(
-                    "[%s] Permanent failure on %s — model unavailable. "
-                    "Not retrying. (%s)",
-                    role.value, model, result.error[:200],
+                    "[%s] Permanent failure on %s — model unavailable. Not retrying. (%s)",
+                    role.value,
+                    model,
+                    result.error[:200],
                 )
                 break
 
             # Other failure
             logger.warning(
                 "[%s] Failed (exit=%d): %s",
-                role.value, result.exit_code, result.error[:200],
+                role.value,
+                result.exit_code,
+                result.error[:200],
             )
             attempt += 1
 
         assert last_result is not None
         logger.error(
             "[%s] Exhausted all %d attempts. Last exit=%d.",
-            role.value, attempt, last_result.exit_code,
+            role.value,
+            attempt,
+            last_result.exit_code,
         )
         return last_result
 
-    def dry_run(self) -> List[Tuple[StepRole, str, bool]]:
+    def dry_run(self) -> list[tuple[StepRole, str, bool]]:
         """
         Ping every configured model/backend combination.
 
         Returns a list of ``(role, model, reachable)`` tuples.
         Does not modify stats.
         """
-        results: List[Tuple[StepRole, str, bool]] = []
+        results: list[tuple[StepRole, str, bool]] = []
         ping_prompt = "Reply with exactly: PONG"
 
-        seen: set[Tuple[str, str]] = set()  # (model, backend)
+        seen: set[tuple[str, str]] = set()  # (model, backend)
 
         for rule in self._config.rules:
             key = (rule.model, rule.backend.value)
@@ -489,9 +520,11 @@ class ExecutionRouter:
                 reachable = result.ok and "PONG" in result.text.upper()
                 logger.info(
                     "dry_run: %s/%s → %s (exit=%d, %dB)",
-                    rule.backend.value, rule.model,
+                    rule.backend.value,
+                    rule.model,
                     "OK" if reachable else "FAIL",
-                    result.exit_code, len(result.raw_output),
+                    result.exit_code,
+                    len(result.raw_output),
                 )
                 results.append((rule.role, rule.model, reachable))
             except Exception as exc:
@@ -500,7 +533,7 @@ class ExecutionRouter:
 
         return results
 
-    def get_stats(self) -> Dict[str, Any]:
+    def get_stats(self) -> dict[str, Any]:
         """
         Return accumulated stats per model.
 
@@ -511,7 +544,7 @@ class ExecutionRouter:
         Plus a top-level ``budget_usd`` key with the total estimated spend.
         """
         with self._lock:
-            out: Dict[str, Any] = {"budget_usd": self._budget_usd}
+            out: dict[str, Any] = {"budget_usd": self._budget_usd}
             for model, stats in self._stats.items():
                 out[model] = {
                     "calls": stats.calls,
@@ -522,8 +555,7 @@ class ExecutionRouter:
                     "total_seconds": round(stats.total_seconds, 2),
                     "total_cost_usd": round(stats.total_cost_usd, 6),
                     "avg_seconds": (
-                        round(stats.total_seconds / stats.calls, 2)
-                        if stats.calls else 0.0
+                        round(stats.total_seconds / stats.calls, 2) if stats.calls else 0.0
                     ),
                 }
             return out
@@ -550,7 +582,9 @@ class ExecutionRouter:
                 wait_minutes = (end_h - hour) * 60 - now_utc.minute
                 logger.info(
                     "Peak hours %02d:00–%02d:00 UTC active. Waiting ~%d min…",
-                    start_h, end_h, wait_minutes,
+                    start_h,
+                    end_h,
+                    wait_minutes,
                 )
                 time.sleep(300)  # check again in 5 minutes
             else:

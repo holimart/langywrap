@@ -8,11 +8,12 @@ Override via: LANGYWRAP_LOG_DIR environment variable.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 # Avoid a circular import — PermissionDecision is imported lazily inside
 # log_event() or passed in as its .value string-equivalent.
@@ -35,7 +36,7 @@ class AuditLogger:
     def __init__(
         self,
         project: str,
-        log_dir: Optional[Path | str] = None,
+        log_dir: Path | str | None = None,
     ) -> None:
         self.project = project
 
@@ -61,8 +62,8 @@ class AuditLogger:
         command: str,
         decision,           # PermissionDecision enum or str
         rule=None,          # Optional[PermissionRule]
-        project: Optional[str] = None,
-        extra: Optional[dict[str, Any]] = None,
+        project: str | None = None,
+        extra: dict[str, Any] | None = None,
     ) -> None:
         """
         Append one audit event to the log file.
@@ -125,10 +126,8 @@ class AuditLogger:
             for line in fh:
                 line = line.strip()
                 if line:
-                    try:
+                    with contextlib.suppress(json.JSONDecodeError):
                         events.append(json.loads(line))
-                    except json.JSONDecodeError:
-                        pass
         return events
 
 

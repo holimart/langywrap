@@ -13,8 +13,6 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Optional
-
 
 # ---------------------------------------------------------------------------
 # Enums
@@ -69,10 +67,10 @@ class CycleResult:
     steps_completed: dict[str, Path] = field(default_factory=dict)
     """Map of step_name → output file path for each successfully completed step."""
 
-    quality_gate_passed: Optional[bool] = None
+    quality_gate_passed: bool | None = None
     """None if no quality gate configured."""
 
-    git_commit_hash: Optional[str] = None
+    git_commit_hash: str | None = None
     """Short commit hash, or None if no commit was made."""
 
     duration_seconds: float = 0.0
@@ -238,7 +236,9 @@ class RalphState:
     # Progress log
     # ------------------------------------------------------------------
 
-    def append_progress(self, cycle_result: CycleResult, task_id: str = "", summary: str = "") -> None:
+    def append_progress(
+        self, cycle_result: CycleResult, task_id: str = "", summary: str = ""
+    ) -> None:
         """Append a cycle entry to progress.md."""
         date_str = datetime.now().strftime("%Y-%m-%d")
         entry_lines: list[str] = [
@@ -454,13 +454,18 @@ class RalphState:
             ]
 
             if cycle_starts:
-                start_idx = cycle_starts[-max_recent_cycles] if len(cycle_starts) >= max_recent_cycles else cycle_starts[0]
+                start_idx = (
+                    cycle_starts[-max_recent_cycles]
+                    if len(cycle_starts) >= max_recent_cycles
+                    else cycle_starts[0]
+                )
             else:
                 start_idx = 0
 
             parts += [
                 f"## Recent Progress — Last {max_recent_cycles} Cycles (from progress.md)",
-                f"(progress.md: {total_progress} lines total; only last {max_recent_cycles} cycles shown)",
+                f"(progress.md: {total_progress} lines total; "
+                f"only last {max_recent_cycles} cycles shown)",
                 "",
             ]
             parts.extend(progress_lines[start_idx:])
@@ -489,7 +494,7 @@ class RalphState:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _parse_task_line(line: str) -> Optional[TaskEntry]:
+    def _parse_task_line(line: str) -> TaskEntry | None:
         """Parse a markdown task line like `- [ ] TASK_001` or `### [ ] TASK_001`."""
         m = re.match(r"^\s*(?:-|#{1,6})\s*\[([ x])\]\s+(\S+)\s*(.*)", line)
         if not m:

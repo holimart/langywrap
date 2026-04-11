@@ -16,9 +16,6 @@ import re
 from pathlib import Path
 from typing import Any
 
-import yaml
-from pydantic import Field
-
 from langywrap.ralph.config import (
     QualityGateConfig,
     RalphConfig,
@@ -30,9 +27,10 @@ from langywrap.ralph.config import (
 try:
     from langywrap.router.config import (
         Backend,
-        ModelTier,
         RouteConfig,
         RouteRule,
+    )
+    from langywrap.router.config import (
         StepRole as RouterStepRole,
     )
 except ImportError:
@@ -118,7 +116,9 @@ def _parse_flow_entry(
         opts: dict[str, Any] = {}
     elif isinstance(entry, dict):
         if len(entry) != 1:
-            raise ValueError(f"Flow entry dict must have exactly one key, got: {list(entry.keys())}")
+            raise ValueError(
+                f"Flow entry dict must have exactly one key, got: {list(entry.keys())}"
+            )
         name = next(iter(entry))
         opts = entry[name] or {}
     else:
@@ -424,10 +424,7 @@ def load_v2(raw: dict, project_dir: Path) -> RalphConfig:
 
     # -- Secrets -------------------------------------------------------------
     secrets_raw = raw.get("secrets", [])
-    if isinstance(secrets_raw, list):
-        secret_patterns = secrets_raw
-    else:
-        secret_patterns = [str(secrets_raw)]
+    secret_patterns = secrets_raw if isinstance(secrets_raw, list) else [str(secrets_raw)]
 
     # -- Cycle types (detection only — model selection is on the step) ------
     cycle_type_rules: list[dict[str, str]] = []
@@ -462,15 +459,25 @@ def load_v2(raw: dict, project_dir: Path) -> RalphConfig:
         quality_gate=primary_gate,
         quality_gates=extra_gates,
         budget=raw.get("budget", 10),
-        review_every_n=raw.get("review_every_n", raw.get("review", {}).get("every", 10) if isinstance(raw.get("review"), dict) else 10),
+        review_every_n=raw.get(
+            "review_every_n",
+            raw.get("review", {}).get("every", 10) if isinstance(raw.get("review"), dict) else 10,
+        ),
         adversarial_every_n=adv_every,
         adversarial_step=adv_step,
         adversarial_milestone_patterns=adv_patterns,
-        hygiene_every_n=raw.get("hygiene_every_n", raw.get("hygiene", {}).get("every", 5) if isinstance(raw.get("hygiene"), dict) else 5),
+        hygiene_every_n=raw.get(
+            "hygiene_every_n",
+            raw.get("hygiene", {}).get("every", 5) if isinstance(raw.get("hygiene"), dict) else 5,
+        ),
         git_commit_after_cycle=git_commit,
         git_add_paths=git_paths,
         scope_restriction=raw.get("scope", ""),
-        secret_patterns=secret_patterns if secret_patterns else RalphConfig.model_fields["secret_patterns"].default_factory(),  # type: ignore[union-attr]
+        secret_patterns=(
+            secret_patterns
+            if secret_patterns
+            else RalphConfig.model_fields["secret_patterns"].default_factory()  # type: ignore[union-attr]
+        ),
         verbose=raw.get("verbose", True),
         max_hang_retries=raw.get("max_hang_retries", 2),
         throttle_utc_start=throttle_start,
@@ -483,7 +490,7 @@ def load_v2(raw: dict, project_dir: Path) -> RalphConfig:
     )
 
 
-def build_route_config_from_v2(raw: dict, project_dir: Path) -> "RouteConfig | None":
+def build_route_config_from_v2(raw: dict, project_dir: Path) -> RouteConfig | None:
     """Build a RouteConfig from v2 YAML models section.
 
     Models can be specified as:

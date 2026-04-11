@@ -237,7 +237,7 @@ class TestTokenSparing:
         """RTK binary that exists is prepended to the command."""
         # Create a fake rtk that just passes through to the next command
         fake_rtk = tmp_path / "rtk"
-        fake_rtk.write_text("#!/bin/bash\nshift  # drop '--'\nexec \"$@\"\n")
+        fake_rtk.write_text("#!/bin/bash\nexec \"$@\"\n")
         fake_rtk.chmod(0o755)
 
         config = BackendConfig(
@@ -257,9 +257,8 @@ class TestTokenSparing:
         fake_execwrap.write_text("#!/bin/bash\nexec \"$@\"\n")
         fake_execwrap.chmod(0o755)
 
-        # Fake rtk: drop '--' separator and exec the rest
         fake_rtk = tmp_path / "rtk"
-        fake_rtk.write_text("#!/bin/bash\nshift  # drop '--'\nexec \"$@\"\n")
+        fake_rtk.write_text("#!/bin/bash\nexec \"$@\"\n")
         fake_rtk.chmod(0o755)
 
         config = BackendConfig(

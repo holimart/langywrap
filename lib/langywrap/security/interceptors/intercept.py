@@ -10,10 +10,10 @@ Environment variables:
     ENABLE_DATA_THEFT_PREVENTION - Set to 'true' to enable data exfiltration checks
 """
 
-import sys
+import os
 import re
 import subprocess
-import os
+import sys
 from datetime import datetime
 
 # ============================================
@@ -101,7 +101,9 @@ SENSITIVE_FILE_PATTERNS = [
     r'\.netrc',
 ]
 
-ENABLE_DATA_THEFT_PREVENTION = os.environ.get('ENABLE_DATA_THEFT_PREVENTION', 'false').lower() == 'true'
+ENABLE_DATA_THEFT_PREVENTION = (
+    os.environ.get('ENABLE_DATA_THEFT_PREVENTION', 'false').lower() == 'true'
+)
 
 # ============================================
 # ANALYSIS FUNCTIONS
@@ -138,9 +140,11 @@ def is_data_theft(command: str) -> tuple[bool, str]:
             return True, f"Potential data exfiltration: {pattern}"
 
     for pattern in SENSITIVE_FILE_PATTERNS:
-        if re.search(pattern, command, re.IGNORECASE):
-            if any(op in command for op in ['cat', 'curl', 'wget', 'nc', 'scp', 'rsync', 'tar', 'zip', 'base64']):
-                return True, f"Accessing sensitive file: {pattern}"
+        _exfil_ops = ['cat', 'curl', 'wget', 'nc', 'scp', 'rsync', 'tar', 'zip', 'base64']
+        if re.search(pattern, command, re.IGNORECASE) and any(
+            op in command for op in _exfil_ops
+        ):
+            return True, f"Accessing sensitive file: {pattern}"
 
     return False, ""
 

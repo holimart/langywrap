@@ -13,7 +13,6 @@ from typing import Any
 import yaml
 from pydantic import BaseModel, Field
 
-
 # ---------------------------------------------------------------------------
 # StepRole — defined here; router will import from this module or redefine.
 # Using a canonical definition here avoids circular import issues when the
@@ -235,6 +234,10 @@ class RalphConfig(BaseModel):
     max_hang_retries: int = 2
     """Retry count when a step exits 124 (timeout) with tiny output (API hang)."""
 
+    max_consecutive_failed_cycles: int = 3
+    """Stop the loop after this many consecutive failed cycles.
+    Failure means the cycle was not fully confirmed or failed its quality gate."""
+
     # -- Peak-hour throttle --------------------------------------------------
 
     throttle_utc_start: int | None = None
@@ -246,6 +249,11 @@ class RalphConfig(BaseModel):
 
     throttle_weekdays_only: bool = True
     """If True, throttle only applies Monday–Friday."""
+
+    throttle_skip_backends: list[str] = Field(default_factory=list)
+    """Backend names that bypass peak-hour throttling.
+    Useful when a project uses free/non-constrained backends like opencode for
+    primary execution and only wants throttling for paid/limited providers."""
 
     # -- Adversarial milestone triggers --------------------------------------
 
@@ -266,6 +274,17 @@ class RalphConfig(BaseModel):
     Last matching rule wins. Used to set cycle_type which gates conditional
     steps via step.run_if_cycle_types. Pattern is case-insensitive regex
     matched against plan.md content."""
+
+    plan_must_contain: list[str] = Field(default_factory=list)
+    """Literal substrings that must appear in plan.md after the orient/plan step.
+    Empty = no literal validation."""
+
+    plan_must_match: list[str] = Field(default_factory=list)
+    """Regex patterns that must match plan.md after the orient/plan step.
+    Empty = no regex validation."""
+
+    plan_require_current_cycle: bool = False
+    """If True, plan.md must mention the current cycle number explicitly."""
 
     # ------------------------------------------------------------------ helpers
 
@@ -395,7 +414,7 @@ def _resolve_step_prompts(steps: list[StepConfig], prompts_dir: Path) -> list[St
     return resolved
 
 
-def load_ralph_config(project_dir: Path) -> "RalphConfig":
+def load_ralph_config(project_dir: Path) -> RalphConfig:
     """Load RalphConfig from .langywrap/ralph.yaml (or fallback paths).
 
     Supports two formats:
@@ -443,7 +462,6 @@ def load_ralph_config(project_dir: Path) -> "RalphConfig":
     raw["project_dir"] = str(project_dir)
 
     if "steps" not in raw or not raw["steps"]:
-        raw_steps = []
         prompts_dir = project_dir / raw.get("state_dir", "ralph") / "prompts"
         raw["steps"] = []
         cfg = RalphConfig(**raw)

@@ -1,0 +1,71 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cat:*)",
+      "Bash(./just:*)",
+      "Bash(./uv:*)",
+      "Bash(./uv run python:*)",
+      "Bash(./uv run pytest:*)",
+      "Bash(bash ./just:*)",
+      "Bash(mkdir:*)",
+      "Bash(ls:*)",
+      "Bash(find:*)",
+      "Bash(head:*)",
+      "Bash(tail:*)",
+      "Bash(grep:*)",
+      "Bash(echo:*)",
+      "Bash(wc:*)",
+      "Bash(xargs cat:*)",
+      "Bash(du:*)",
+      "Bash(du -sh:*)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:pypi.org)",
+      "WebFetch(domain:arxiv.org)",
+      "WebFetch(domain:en.wikipedia.org)",
+      "WebFetch(domain:deepwiki.com)"
+    ],
+    "deny": [
+      "Bash(rm -rf:*)",
+      "Bash(rm -r:*)",
+      "Bash(sudo:*)",
+      "Bash(dd:*)",
+      "Bash(mkfs:*)",
+      "Bash(chmod 777:*)",
+      "Bash(shutdown:*)",
+      "Bash(reboot:*)",
+      "Bash(systemctl:*)",
+      "Bash(mount:*)",
+      "Bash(umount:*)",
+      "Bash(git push --force:*)",
+      "Bash(git push -f:*)",
+      "Bash(curl *pastebin*)",
+      "Bash(curl *transfer.sh*)",
+      "Bash(curl *file.io*)",
+      "Bash(curl *paste.ee*)",
+      "Bash(curl *0x0.st*)",
+      "Bash(curl *ix.io*)",
+      "Bash(wget *pastebin*)",
+      "Bash(wget *transfer.sh*)",
+      "Bash(wget *file.io*)"
+    ]
+  },
+  "model": "sonnet",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/security_hook.sh"
+          }
+        ]
+      }
+    ]
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "input=$(cat); used=$(echo \"$input\" | grep -oP '\"used_percentage\":\\s*\\K[0-9.]+'); [ -n \"$used\" ] && printf \"Context: %.0f%% used\" \"$used\" || echo \"Context: N/A\""
+  },
+  "effortLevel": "medium"
+}

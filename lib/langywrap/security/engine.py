@@ -12,23 +12,20 @@ just loads in the correct order.
 from __future__ import annotations
 
 import subprocess
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Optional
 
 from .audit import AuditLogger
 from .permissions import (
-    PermissionRule,
-    PermissionsConfig,
-    load_permissions,
-    match_pattern,
-    merge_permissions,
-    _load_yaml,
     _BUNDLED_DEFAULTS,
     _CONFIG_FILENAME,
+    PermissionRule,
+    PermissionsConfig,
+    _load_yaml,
+    match_pattern,
+    merge_permissions,
 )
-
 
 # ---------------------------------------------------------------------------
 # Decision enum
@@ -47,7 +44,7 @@ class PermissionDecision(Enum):
 @dataclass
 class SecurityResult:
     decision: PermissionDecision
-    rule: Optional[PermissionRule] = None
+    rule: PermissionRule | None = None
     message: str = ""
     suggestion: str = ""
 
@@ -85,8 +82,8 @@ class SecurityEngine:
     def __init__(
         self,
         project_dir: Path | str,
-        system_dir: Optional[Path | str] = None,
-        project_name: Optional[str] = None,
+        system_dir: Path | str | None = None,
+        project_name: str | None = None,
         enable_audit: bool = True,
     ) -> None:
         self.project_dir = Path(project_dir).resolve()
@@ -95,7 +92,7 @@ class SecurityEngine:
 
         self._config = self._build_config()
 
-        self._audit: Optional[AuditLogger] = None
+        self._audit: AuditLogger | None = None
         if enable_audit:
             self._audit = AuditLogger(project=self.project_name)
 
@@ -138,7 +135,7 @@ class SecurityEngine:
     # Core check logic
     # ------------------------------------------------------------------
 
-    def _find_rule(self, command: str, rules: list) -> Optional[PermissionRule]:
+    def _find_rule(self, command: str, rules: list) -> PermissionRule | None:
         for rule in rules:
             if match_pattern(command, rule.pattern):
                 return rule
@@ -160,7 +157,9 @@ class SecurityEngine:
             result = SecurityResult(
                 decision   = PermissionDecision.DENY,
                 rule       = deny_rule,
-                message    = deny_rule.message or f"Command blocked: {deny_rule.reason or 'policy'}",
+                message    = (
+                    deny_rule.message or f"Command blocked: {deny_rule.reason or 'policy'}"
+                ),
                 suggestion = deny_rule.suggestion or "",
             )
             if self._audit:
@@ -195,7 +194,11 @@ class SecurityEngine:
         result = SecurityResult(
             decision = PermissionDecision.ALLOW,
             rule     = allow_rule,
-            message  = (allow_rule.reason if allow_rule else "No matching deny/ask rule — allowed by default"),
+            message  = (
+                allow_rule.reason
+                if allow_rule
+                else "No matching deny/ask rule — allowed by default"
+            ),
         )
         if self._audit:
             self._audit.log_event(

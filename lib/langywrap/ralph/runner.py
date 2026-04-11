@@ -13,11 +13,12 @@ import subprocess
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Any
 
-from langywrap.ralph.config import RalphConfig, StepConfig
+from langywrap.ralph.config import QualityGateConfig, RalphConfig, StepConfig, StepRole
 from langywrap.ralph.context import build_full_prompt, build_orient_context
 from langywrap.ralph.state import CycleResult, RalphState
+from langywrap.ralph.step_logger import StepLogger
 
 try:
     from langywrap.router.backends import SubagentResult as _SubagentResult
@@ -33,8 +34,12 @@ log = logging.getLogger(__name__)
 
 try:
     from langywrap.router import ExecutionRouter  # type: ignore[import]
+    from langywrap.router.router import _infer_backend_from_model  # type: ignore[import]
 except ImportError:
     ExecutionRouter = None  # type: ignore[assignment,misc]
+
+    def _infer_backend_from_model(model: str) -> Any:  # type: ignore[no-redef]
+        raise LookupError("router not available")
 
 
 # ---------------------------------------------------------------------------
@@ -56,7 +61,7 @@ class RalphLoop:
     def __init__(
         self,
         config: RalphConfig,
-        router: Optional["ExecutionRouter"] = None,
+        router: ExecutionRouter | None = None,
     ) -> None:
         self.config = config
         self.router = router
@@ -65,7 +70,8 @@ class RalphLoop:
             tasks_file=config.resolved_tasks_file,
             progress_file=config.resolved_progress_file,
         )
-        self._log = self._make_logger()
+        self._step_logger = StepLogger(config.resolved_state_dir / "logs")
+        self._log = self._step_logger.log
 
     # ------------------------------------------------------------------
     # Public API
@@ -73,7 +79,7 @@ class RalphLoop:
 
     def run(
         self,
-        budget: Optional[int] = None,
+        budget: int | None = None,
         resume: bool = False,
     ) -> list[CycleResult]:
         """Main loop. Runs up to `budget` cycles and returns all CycleResults.
@@ -86,6 +92,7 @@ class RalphLoop:
         """
         max_cycles = budget if budget is not None else self.config.budget
         results: list[CycleResult] = []
+        consecutive_failures = 0
 
         # Determine starting cycle
         last_cycle = self.state.get_cycle_count()
@@ -112,15 +119,12 @@ class RalphLoop:
             # Peak-hour throttle
             self._wait_if_peak_hours()
 
-            self._log(f"\n{'='*60}")
+            self._log(f"\n{'=' * 60}")
             self._log(f"Cycle {cycle_num}/{end_cycle}  ({pending} pending tasks)")
-            self._log(f"{'='*60}")
+            self._log(f"{'=' * 60}")
 
             # Hygiene injection
-            if (
-                self.config.hygiene_every_n
-                and cycle_num % self.config.hygiene_every_n == 0
-            ):
+            if self.config.hygiene_every_n and cycle_num % self.config.hygiene_every_n == 0:
                 qg_cmd = self.config.quality_gate.command if self.config.quality_gate else ""
                 injected = self.state.inject_hygiene_task(
                     cycle_num,
@@ -138,12 +142,15 @@ class RalphLoop:
                     template = pt.get("template", "")
                     if template:
                         from datetime import date
+
                         rendered = template.format(
                             cycle=cycle_num,
                             date=date.today().isoformat(),
                         )
                         injected = self.state.inject_periodic_task(
-                            cycle_num, marker=marker, content=rendered,
+                            cycle_num,
+                            marker=marker,
+                            content=rendered,
                         )
                         if injected:
                             self._log(f"  [{marker}] Injected task for cycle {cycle_num}")
@@ -174,18 +181,45 @@ class RalphLoop:
 
             # Stagnation check
             if len(results) >= 4 and self.detect_stagnation(n_cycles=4):
-                self._log("WARNING: stagnation detected — last 4 cycles identical outcome. Consider diversifying tasks.")
+                self._log(
+                    "WARNING: stagnation detected — last 4 cycles identical outcome. "
+                    "Consider diversifying tasks."
+                )
 
             self._log(f"Cycle {cycle_num} done in {result.duration_seconds:.1f}s")
             self._log_cycle_stats(result)
+
+            if self._is_failed_cycle(result):
+                consecutive_failures += 1
+                self._log(
+                    "WARNING: cycle classified as FAILED "
+                    f"({consecutive_failures}/{self.config.max_consecutive_failed_cycles} consecutive)"
+                )
+            else:
+                consecutive_failures = 0
 
             if result.rate_limited:
                 self._log("Rate limit detected — stopping loop.")
                 break
 
+            if consecutive_failures >= self.config.max_consecutive_failed_cycles:
+                self._log(
+                    "Stopping loop: reached max consecutive failed cycles "
+                    f"({self.config.max_consecutive_failed_cycles})."
+                )
+                break
+
         self._log(f"\nRalphLoop finished: {len(results)} cycles.")
         self._log_run_stats(results)
+        self._step_logger.close()
         return results
+
+    @staticmethod
+    def _is_failed_cycle(result: CycleResult) -> bool:
+        """Return True when a cycle should count toward failure streaks."""
+        if result.quality_gate_passed is False:
+            return True
+        return not result.fully_confirmed
 
     def run_cycle(self, cycle_num: int) -> CycleResult:
         """Execute a single full pipeline cycle.
@@ -225,8 +259,7 @@ class RalphLoop:
 
         for step in pipeline_steps:
             if abort_remaining:
-                self._log(f"\n  ┌── STEP: {step.name.upper()} ──")
-                self._log(f"  └── {step.name}: SKIPPED (fail-fast from prior step)\n")
+                self._log(f"  STEP: {step.name.upper()} — SKIPPED (fail-fast from prior step)")
                 continue
 
             self._log(f"\n  ┌── STEP: {step.name.upper()} ──")
@@ -253,14 +286,18 @@ class RalphLoop:
             if step.run_if_step and step.run_if_pattern:
                 prior_output = confirmed_outputs.get(step.run_if_step, "")
                 if not re.search(step.run_if_pattern, prior_output, re.IGNORECASE):
-                    self._log(f"  └── {step.name}: SKIPPED (condition not met: "
-                              f"{step.run_if_step} !~ /{step.run_if_pattern}/)\n")
+                    self._log(
+                        f"  └── {step.name}: SKIPPED (condition not met: "
+                        f"{step.run_if_step} !~ /{step.run_if_pattern}/)\n"
+                    )
                     continue
 
             # Cycle-type gating: skip step if cycle type doesn't match
             if step.run_if_cycle_types and cycle_type not in step.run_if_cycle_types:
-                self._log(f"  └── {step.name}: SKIPPED (cycle type '{cycle_type}' "
-                          f"not in {step.run_if_cycle_types})\n")
+                self._log(
+                    f"  └── {step.name}: SKIPPED (cycle type '{cycle_type}' "
+                    f"not in {step.run_if_cycle_types})\n"
+                )
                 continue
 
             # Mutual exclusion: if output_as slot already filled by a prior
@@ -278,8 +315,29 @@ class RalphLoop:
                 "cycle_prompt_extra": step.prompt_extra,
             }
 
+            # Open per-step log + print Engine/Tools/Log/Monitor banner fields
+            step_log = self._step_logger.open_step(
+                step.name,
+                model=step.model or "",
+                engine=step.engine if step.engine != "auto" else "",
+                tools=step.tools or "",
+                timeout_minutes=step.timeout_minutes,
+            )
+            t_step_start = time.monotonic()
+            self._step_logger.start_heartbeat(step.name, step_log)
+
             output, success, step_sr = self._run_step_with_retries(
-                step, cycle_ctx, cycle_type=cycle_type,
+                step,
+                cycle_ctx,
+                cycle_type=cycle_type,
+            )
+
+            step_duration = time.monotonic() - t_step_start
+            self._step_logger.close_step(
+                step.name,
+                output,
+                success=success,
+                duration=step_duration,
             )
 
             # Accumulate token + file stats from this step.
@@ -295,13 +353,42 @@ class RalphLoop:
                 if step_sr.files_accessed:
                     result.files_accessed[output_key] = step_sr.files_accessed
 
-            # Rate-limit detection: abort cycle and signal the outer loop to stop.
-            # Catches both router-level failures and exit_code=0 responses where
-            # the model body contains a rate-limit message (e.g. NVIDIA/Kimi K2.5).
-            if re.search(r"rate.limit|hit your limit|too many requests|429", output, re.IGNORECASE):
-                self._log(f"  └── {step.name}: RATE LIMITED — aborting cycle\n")
-                result.rate_limited = True
-                abort_remaining = True
+            # Rate-limit detection: the router is the single source of truth.
+            # Do not rescan successful output here; that caused false positives
+            # from ordinary JSON/tool output containing numbers like 429.
+            if step_sr is not None and step_sr.rate_limited:
+                snippet = step_sr.rate_limit_snippet or "<no snippet captured>"
+                self._log(
+                    f"  [{step.name}] Rate limited (detected in output: {snippet!r}) "
+                    "— waiting 10m then retrying once..."
+                )
+                time.sleep(600)
+                step_log2 = self._step_logger.open_step(
+                    step.name,
+                    model=step.model or "",
+                    engine=step.engine if step.engine != "auto" else "",
+                    tools=step.tools or "",
+                    timeout_minutes=step.timeout_minutes,
+                )
+                t2 = time.monotonic()
+                self._step_logger.start_heartbeat(step.name, step_log2)
+                output, success, step_sr = self._run_step_with_retries(
+                    step,
+                    cycle_ctx,
+                    cycle_type=cycle_type,
+                )
+                self._step_logger.close_step(
+                    step.name,
+                    output,
+                    success=success,
+                    duration=time.monotonic() - t2,
+                )
+                if step_sr is not None and step_sr.rate_limited:
+                    snippet = step_sr.rate_limit_snippet or "<no snippet captured>"
+                    self._log(f"  [{step.name}] Rate limited again — aborting cycle")
+                    self._log(f"  [{step.name}] Matched snippet: {snippet!r}")
+                    result.rate_limited = True
+                    abort_remaining = True
 
             # Save output to steps/{output_key}.md
             out_path = self.state.step_output_path(output_key)
@@ -309,8 +396,51 @@ class RalphLoop:
             result.steps_completed[output_key] = out_path
 
             # Check confirmation token
-            confirmed = self._check_token(output, step.confirmation_token)
+            confirmed = success and self._check_token(output, step.confirmation_token)
             result.confirmed_tokens[output_key] = confirmed
+
+            # Optional plan validation after the step that is expected to write plan.md.
+            if step.name in {"orient", "plan"} and self._plan_validation_enabled():
+                plan_ok, plan_error = self._validate_plan(cycle_num)
+                if not plan_ok:
+                    self._log(f"  └── {step.name}: PLAN INVALID — {plan_error}")
+                    retry_ctx = dict(cycle_ctx)
+                    retry_ctx["plan_validation_error"] = plan_error
+                    retry_ctx["retry_attempt"] = 1
+                    self._log(f"  [{step.name}] Retrying once with validation feedback...")
+
+                    step_log2 = self._step_logger.open_step(
+                        step.name,
+                        model=step.model or "",
+                        engine=step.engine if step.engine != "auto" else "",
+                        tools=step.tools or "",
+                        timeout_minutes=step.timeout_minutes,
+                    )
+                    t2 = time.monotonic()
+                    self._step_logger.start_heartbeat(step.name, step_log2)
+                    output, success, step_sr = self._run_step_with_retries(
+                        step,
+                        retry_ctx,
+                        cycle_type=cycle_type,
+                    )
+                    self._step_logger.close_step(
+                        step.name,
+                        output,
+                        success=success,
+                        duration=time.monotonic() - t2,
+                    )
+
+                    out_path.write_text(output, encoding="utf-8")
+                    result.steps_completed[output_key] = out_path
+                    confirmed = success and self._check_token(output, step.confirmation_token)
+                    result.confirmed_tokens[output_key] = confirmed
+
+                    plan_ok, plan_error = self._validate_plan(cycle_num)
+                    if not plan_ok:
+                        self._log(f"  └── {step.name}: PLAN INVALID after retry — {plan_error}\n")
+                        result.confirmed_tokens[output_key] = False
+                        abort_remaining = True
+                        continue
 
             if confirmed:
                 confirmed_outputs[output_key] = output
@@ -367,7 +497,7 @@ class RalphLoop:
         self,
         step: StepConfig,
         cycle_context: dict,
-    ) -> tuple[str, bool, Optional["_SubagentResult"]]:
+    ) -> tuple[str, bool, _SubagentResult | None]:
         """Build prompt, call router/engine, return (output_text, success, result).
 
         Includes hang detection: if the call times out with tiny output (<2KB),
@@ -376,14 +506,18 @@ class RalphLoop:
         Falls back to a stub if no router is available (useful for testing).
         """
         prompt = self.build_prompt(step, cycle_context)
+        self._log(f"  │   Prompt:  {len(prompt):,} chars")
 
         if self.router is None:
             import logging
+
             logging.getLogger("langywrap.ralph").warning(
                 "No router configured — running in stub mode. "
                 "Configure .langywrap/router.yaml to enable AI execution."
             )
-            self._log(f"    [STUB] No router — would run {step.name} with {len(prompt)} char prompt")
+            self._log(
+                f"    [STUB] No router — would run {step.name} with {len(prompt)} char prompt"
+            )
             return f"# {step.name} STUB\n{step.confirmation_token} stub=true\n", True, None
 
         max_attempts = self.config.max_hang_retries + 1
@@ -403,20 +537,15 @@ class RalphLoop:
                 # Hang detection: timeout with tiny output → retry
                 output_size = len(str(exc))
                 if attempt < max_attempts and output_size < 2000:
-                    self._log(f"    [{step.name}] API hang (timeout, {output_size}B). "
-                              f"Retry {attempt}/{self.config.max_hang_retries}...")
+                    self._log(
+                        f"    [{step.name}] API hang (timeout, {output_size}B). "
+                        f"Retry {attempt}/{self.config.max_hang_retries}..."
+                    )
                     time.sleep(15)
                     continue
                 self._log(f"    [{step.name}] Timeout after {attempt} attempt(s): {exc}")
                 return f"# {step.name} TIMEOUT\n{exc}\n", False, None
             except Exception as exc:
-                err_str = str(exc).lower()
-                # Rate limit detection
-                if any(kw in err_str for kw in ("rate limit", "429", "too many requests")):
-                    if attempt < max_attempts:
-                        self._log(f"    [{step.name}] Rate limited. Waiting 10m before retry...")
-                        time.sleep(600)
-                        continue
                 self._log(f"    ERROR in {step.name}: {exc}")
                 return f"# {step.name} ERROR\n{exc}\n", False, None
 
@@ -450,6 +579,15 @@ class RalphLoop:
                 f"The previous attempt failed. Error output:\n\n```\n{retry_error[:5000]}\n```\n"
             )
 
+        plan_validation_error: str = context.get("plan_validation_error", "")
+        if plan_validation_error:
+            template = template + (
+                "\n\n---\n\n## Plan Validation Feedback\n\n"
+                "The previous `research/plan.md` output did not satisfy the orchestrator "
+                "contract. Rewrite the plan so it passes validation exactly.\n\n"
+                f"Validation error: {plan_validation_error}\n"
+            )
+
         is_orient = step.name == "orient"
 
         return build_full_prompt(
@@ -472,13 +610,10 @@ class RalphLoop:
             return True
         return self._run_quality_gate(self.config.quality_gate)
 
-    def _run_quality_gate(self, qg: "QualityGateConfig") -> bool:
+    def _run_quality_gate(self, qg: QualityGateConfig) -> bool:
         """Run a single quality gate. Returns True on pass."""
-        from langywrap.ralph.config import QualityGateConfig  # noqa: F811
 
-        cwd = (
-            Path(qg.working_dir) if qg.working_dir else self.config.project_dir
-        )
+        cwd = Path(qg.working_dir) if qg.working_dir else self.config.project_dir
         timeout_sec = qg.timeout_minutes * 60
 
         self._log(f"    Running: {qg.command}")
@@ -510,7 +645,7 @@ class RalphLoop:
     # Git commit
     # ------------------------------------------------------------------
 
-    def safe_git_commit(self, cycle_num: int, plan_summary: str = "") -> Optional[str]:
+    def safe_git_commit(self, cycle_num: int, plan_summary: str = "") -> str | None:
         """Stage git_add_paths, scan for secrets, commit, return short hash.
 
         Returns None if commit was skipped or failed.
@@ -534,7 +669,13 @@ class RalphLoop:
                         check=True,
                     )
                 except subprocess.CalledProcessError as exc:
-                    self._log(f"    git add {path} failed: {exc.stderr}")
+                    stderr = (
+                        exc.stderr.decode() if isinstance(exc.stderr, bytes) else (exc.stderr or "")
+                    )
+                    if "ignored by one of your .gitignore files" in stderr:
+                        self._log(f"    git add {path} skipped (ignored by gitignore)")
+                    else:
+                        self._log(f"    git add {path} failed: {exc.stderr}")
 
         # Secret scan on staged files
         secret_hit = self._scan_staged_for_secrets()
@@ -637,9 +778,7 @@ class RalphLoop:
                 "template": str(step.prompt_template),
                 "template_exists": step.prompt_template.exists(),
                 "template_size": (
-                    step.prompt_template.stat().st_size
-                    if step.prompt_template.exists()
-                    else 0
+                    step.prompt_template.stat().st_size if step.prompt_template.exists() else 0
                 ),
                 "role": str(step.role),
                 "timeout_minutes": step.timeout_minutes,
@@ -665,6 +804,7 @@ class RalphLoop:
             for step in self.config.steps:
                 try:
                     from langywrap.router.config import StepRole as RouterStepRole
+
                     role = RouterStepRole(step.role.value)
                     rule = self.router.route(role)
                     # Show effective model/engine (step config takes priority)
@@ -672,6 +812,9 @@ class RalphLoop:
                     effective_backend = rule.backend.value
                     if step.engine and step.engine != "auto":
                         effective_backend = step.engine
+                    # Claude models always run on claudecode regardless of engine override.
+                    if effective_model.startswith("claude-"):
+                        effective_backend = "claude"
                     entry: dict[str, Any] = {
                         "step": step.name,
                         "model": effective_model,
@@ -685,10 +828,12 @@ class RalphLoop:
                         entry["output_as"] = step.output_as
                     router_info["routing"].append(entry)
                 except (LookupError, ValueError):
-                    router_info["routing"].append({
-                        "step": step.name,
-                        "error": f"no rule for role={step.role.value}",
-                    })
+                    router_info["routing"].append(
+                        {
+                            "step": step.name,
+                            "error": f"no rule for role={step.role.value}",
+                        }
+                    )
             report["router"] = router_info
         else:
             report["router"] = "None (stub mode)"
@@ -716,7 +861,7 @@ class RalphLoop:
         step: StepConfig,
         cycle_context: dict,
         cycle_type: str = "",
-    ) -> tuple[str, bool, Optional["_SubagentResult"]]:
+    ) -> tuple[str, bool, _SubagentResult | None]:
         """Run a step, then optionally retry if retry_count > 0.
 
         If retry_gate_command is set, run it after each attempt. If it exits 0,
@@ -729,10 +874,18 @@ class RalphLoop:
         if step.retry_count <= 0 or not step.retry_gate_command:
             return output, success, sr
 
+        if not success:
+            self._log(
+                f"    [{step.name}] Step execution failed before retry gate; preserving failure state"
+            )
+            return output, False, sr
+
         # Check if retries are conditional on cycle type
         if step.retry_if_cycle_types and cycle_type not in step.retry_if_cycle_types:
-            self._log(f"    [{step.name}] Retry skipped (cycle type '{cycle_type}' "
-                      f"not in {step.retry_if_cycle_types})")
+            self._log(
+                f"    [{step.name}] Retry skipped (cycle type '{cycle_type}' "
+                f"not in {step.retry_if_cycle_types})"
+            )
             return output, success, sr
 
         for attempt in range(1, step.retry_count + 1):
@@ -740,7 +893,7 @@ class RalphLoop:
             gate_pass, gate_output = self._run_gate_command(step.retry_gate_command)
             if gate_pass:
                 self._log(f"    [{step.name}] Gate passed after {attempt - 1} retries")
-                return output, True, sr
+                return output, success, sr
 
             self._log(f"    [{step.name}] Gate failed — retry {attempt}/{step.retry_count}")
 
@@ -764,7 +917,7 @@ class RalphLoop:
         gate_pass, _ = self._run_gate_command(step.retry_gate_command)
         if gate_pass:
             self._log(f"    [{step.name}] Gate passed after {step.retry_count} retries")
-            return output, True, sr
+            return output, success, sr
 
         self._log(f"    [{step.name}] Gate still failing after {step.retry_count} retries")
         return output, success, sr
@@ -798,6 +951,9 @@ class RalphLoop:
         if start is None or end is None:
             return
 
+        if self._should_skip_throttle():
+            return
+
         while True:
             now = datetime.now(timezone.utc)
             hour = now.hour
@@ -807,11 +963,74 @@ class RalphLoop:
 
             if start <= hour < end:
                 minutes_left = (end - hour) * 60 - now.minute
-                self._log(f"  [PEAK HOURS] {now:%H:%M} UTC — pausing. "
-                          f"Off-peak in ~{minutes_left}m.")
+                self._log(
+                    f"  [PEAK HOURS] {now:%H:%M} UTC — pausing. Off-peak in ~{minutes_left}m."
+                )
                 time.sleep(60)  # re-check every minute
             else:
                 return
+
+    def _should_skip_throttle(self) -> bool:
+        """Return True when the configured primary backend should bypass throttle."""
+        skip_backends = {b.lower() for b in self.config.throttle_skip_backends}
+        if not skip_backends:
+            return False
+
+        backend = self._primary_backend_name()
+        return backend.lower() in skip_backends if backend else False
+
+    def _primary_backend_name(self) -> str:
+        """Infer the primary execution backend for this pipeline.
+
+        Peak-hour throttling is checked before each cycle, so this uses the first
+        execute-like pipeline step as the best available approximation.
+        """
+        for step in self.config.steps:
+            if not step.pipeline:
+                continue
+            if step.role == StepRole.EXECUTE or step.name == "execute":
+                if step.engine and step.engine != "auto":
+                    return step.engine
+                if step.model:
+                    return _infer_backend_from_model(step.model).value
+                break
+
+        if self.router is not None:
+            try:
+                rule = self.router.route(StepRole.EXECUTE, {})
+                return rule.backend.value
+            except Exception:
+                return ""
+
+        return ""
+
+    def _plan_validation_enabled(self) -> bool:
+        return bool(
+            self.config.plan_must_contain
+            or self.config.plan_must_match
+            or self.config.plan_require_current_cycle
+        )
+
+    def _validate_plan(self, cycle_num: int) -> tuple[bool, str]:
+        """Validate plan.md using repo-configured content requirements."""
+        plan = self.state.read_plan()
+        if not plan.strip():
+            return False, "plan.md missing or empty"
+
+        for required in self.config.plan_must_contain:
+            if required not in plan:
+                return False, f"missing required text: {required!r}"
+
+        for pattern in self.config.plan_must_match:
+            if not re.search(pattern, plan, re.IGNORECASE | re.MULTILINE):
+                return False, f"missing required pattern: {pattern!r}"
+
+        if self.config.plan_require_current_cycle:
+            cycle_pattern = rf"\bcycle\s+{cycle_num}\b"
+            if not re.search(cycle_pattern, plan, re.IGNORECASE):
+                return False, f"plan does not mention cycle {cycle_num}"
+
+        return True, ""
 
     # ------------------------------------------------------------------
     # Cycle type detection
@@ -862,16 +1081,19 @@ class RalphLoop:
         # Run finalize step to update tasks based on adversarial findings
         finalize_step = self._find_step("finalize")
         if finalize_step:
-            self._log(f"\n  ┌── STEP: FINALIZE (after adversarial) ──")
-            output, success, _ = self.run_step(finalize_step, {
-                "cycle_num": cycle_num,
-                "orient_context": orient_ctx,
-                "confirmed_outputs": confirmed_outputs,
-            })
+            self._log("\n  ┌── STEP: FINALIZE (after adversarial) ──")
+            output, success, _ = self.run_step(
+                finalize_step,
+                {
+                    "cycle_num": cycle_num,
+                    "orient_context": orient_ctx,
+                    "confirmed_outputs": confirmed_outputs,
+                },
+            )
             out_path = self.state.step_output_path(finalize_step.name)
             out_path.write_text(output, encoding="utf-8")
             result.steps_completed[finalize_step.name] = out_path
-            self._log(f"  └── finalize: done\n")
+            self._log("  └── finalize: done\n")
 
         # Git commit
         if self.config.git_commit_after_cycle:
@@ -894,6 +1116,7 @@ class RalphLoop:
             template = self.config.resolved_prompts_dir / "step_adversarial.md"
             if template.exists():
                 from langywrap.ralph.config import StepRole
+
                 adv_step = StepConfig(
                     name="adversarial",
                     prompt_template=template,
@@ -905,11 +1128,14 @@ class RalphLoop:
                 return
 
         orient_ctx = build_orient_context(self.state, max_recent_cycles=3)
-        output, success, _ = self.run_step(adv_step, {
-            "cycle_num": cycle_num,
-            "orient_context": orient_ctx,
-            "confirmed_outputs": confirmed_outputs,
-        })
+        output, success, _ = self.run_step(
+            adv_step,
+            {
+                "cycle_num": cycle_num,
+                "orient_context": orient_ctx,
+                "confirmed_outputs": confirmed_outputs,
+            },
+        )
 
         out_path = self.state.step_output_path("adversarial")
         out_path.write_text(output, encoding="utf-8")
@@ -932,10 +1158,7 @@ class RalphLoop:
         if not execute_output:
             return False
 
-        for pattern in patterns:
-            if re.search(pattern, execute_output, re.IGNORECASE):
-                return True
-        return False
+        return any(re.search(pattern, execute_output, re.IGNORECASE) for pattern in patterns)
 
     def _find_step(self, name: str) -> StepConfig | None:
         """Find a step by name in config.steps."""
@@ -968,7 +1191,7 @@ class RalphLoop:
             return True
         return token in output
 
-    def _scan_staged_for_secrets(self) -> Optional[str]:
+    def _scan_staged_for_secrets(self) -> str | None:
         """Check staged file names against config.secret_patterns.
 
         Returns the first suspicious filename, or None if clean.
@@ -1021,7 +1244,7 @@ class RalphLoop:
         if result.tokens_by_model:
             col = max(len(m) for m in result.tokens_by_model) + 2
             lines.append(f"  {'Model':<{col}}  In        Out")
-            lines.append(f"  {'-'*col}  --------  --------")
+            lines.append(f"  {'-' * col}  --------  --------")
             for model, (in_tok, out_tok) in sorted(result.tokens_by_model.items()):
                 lines.append(f"  {model:<{col}}  {in_tok:>8,}  {out_tok:>8,}")
             lines.append(
@@ -1062,7 +1285,7 @@ class RalphLoop:
         if run_by_model:
             col = max(len(m) for m in run_by_model) + 2
             self._log(f"  {'Model':<{col}}  In        Out")
-            self._log(f"  {'-'*col}  --------  --------")
+            self._log(f"  {'-' * col}  --------  --------")
             for model, (in_tok, out_tok) in sorted(run_by_model.items()):
                 self._log(f"  {model:<{col}}  {in_tok:>8,}  {out_tok:>8,}")
             self._log(f"  {'TOTAL':<{col}}  {total_in:>8,}  {total_out:>8,}")
@@ -1072,18 +1295,5 @@ class RalphLoop:
                 self._log(f"    {f}")
         self._log("")
 
-    def _make_logger(self):
-        """Return a logging function that respects config.verbose.
-
-        When a proper logging handler is configured (e.g. via ``-v`` CLI flag),
-        we only use the logger to avoid duplicate output.  When no handler is
-        active (WARNING-only default), we print directly so the operator still
-        sees progress.
-        """
-        def _log(msg: str) -> None:
-            log.info(msg)
-            # Also print to stdout when verbose is on BUT no INFO-level
-            # handler is active (avoids duplicate lines with -v/-vv).
-            if self.config.verbose and not log.isEnabledFor(logging.INFO):
-                print(msg)
-        return _log
+    # _make_logger removed — logging is now handled by StepLogger (step_logger.py).
+    # self._log = self._step_logger.log (set in __init__)

@@ -25,9 +25,8 @@ import json
 import logging
 import random
 import time
-from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -37,7 +36,6 @@ from .config import (
     ModelTier,
     RouteConfig,
     RouteRule,
-    StepRole,
     save_route_config,
 )
 
@@ -48,7 +46,7 @@ logger = logging.getLogger(__name__)
 # Available models per tier (the mutation search space)
 # ---------------------------------------------------------------------------
 
-_MODELS_BY_TIER: Dict[ModelTier, List[str]] = {
+_MODELS_BY_TIER: dict[ModelTier, list[str]] = {
     ModelTier.CHEAP: [
         "claude-haiku-4-5-20251001",
         "openrouter/moonshotai/kimi-k2.5",
@@ -118,9 +116,9 @@ class RouteConfigVariant(BaseModel):
     fitness_score: float = 0.0
     generation: int = 0
     parent_id: str = ""
-    mutations: List[str] = Field(default_factory=list)
+    mutations: list[str] = Field(default_factory=list)
     created_at: float = Field(default_factory=time.time)
-    metrics_history: List[Dict[str, Any]] = Field(default_factory=list)
+    metrics_history: list[dict[str, Any]] = Field(default_factory=list)
 
     def model_post_init(self, __context: Any) -> None:
         if not self.variant_id:
@@ -132,7 +130,7 @@ class RouteConfigVariant(BaseModel):
         h = hashlib.sha256(f"{content}{self.created_at}".encode()).hexdigest()[:12]
         return f"v{self.generation}_{h}"
 
-    def update_fitness(self, metrics: Dict[str, Any]) -> None:
+    def update_fitness(self, metrics: dict[str, Any]) -> None:
         """
         Compute and update fitness_score from raw metrics.
 
@@ -183,12 +181,12 @@ class RouteEvolver:
     def __init__(
         self,
         archive_dir: Path,
-        rng_seed: Optional[int] = None,
+        rng_seed: int | None = None,
     ) -> None:
         self._archive_dir = archive_dir
         self._archive_dir.mkdir(parents=True, exist_ok=True)
         self._rng = random.Random(rng_seed)
-        self._population: List[RouteConfigVariant] = []
+        self._population: list[RouteConfigVariant] = []
         self._load_archive()
         if not self._population:
             # Seed with the default config
@@ -253,13 +251,13 @@ class RouteEvolver:
         # Weighted random selection
         r = self._rng.uniform(0, total)
         cumulative = 0.0
-        for variant, score in zip(self._population, scores):
+        for variant, score in zip(self._population, scores, strict=True):
             cumulative += score
             if r <= cumulative:
                 return variant
         return self._population[-1]
 
-    def record_result(self, variant_id: str, metrics: Dict[str, Any]) -> None:
+    def record_result(self, variant_id: str, metrics: dict[str, Any]) -> None:
         """
         Update fitness for ``variant_id`` after observing a ralph cycle.
 
@@ -296,7 +294,7 @@ class RouteEvolver:
         parent = self.select_parent()
         return self.mutate(parent)
 
-    def list_variants(self) -> List[RouteConfigVariant]:
+    def list_variants(self) -> list[RouteConfigVariant]:
         """Return a copy of the current population, sorted by fitness descending."""
         return sorted(self._population, key=lambda v: v.fitness_score, reverse=True)
 
@@ -319,7 +317,7 @@ class RouteEvolver:
         self,
         config: RouteConfig,
         mutation_name: str,
-    ) -> Tuple[RouteConfig, str]:
+    ) -> tuple[RouteConfig, str]:
         """Dispatch to the named mutation operator. Returns (new_config, description)."""
         ops = {
             "swap_model": self._mut_swap_model,
@@ -332,18 +330,18 @@ class RouteEvolver:
         op = ops.get(mutation_name, self._mut_swap_model)
         return op(config)
 
-    def _clone_rules(self, config: RouteConfig) -> Tuple[RouteConfig, List[RouteRule]]:
+    def _clone_rules(self, config: RouteConfig) -> tuple[RouteConfig, list[RouteRule]]:
         """Return a new config and a mutable copy of its rules."""
         rules = [rule.model_copy(deep=True) for rule in config.rules]
         new_cfg = config.model_copy(deep=True)
         new_cfg.rules = rules
         return new_cfg, rules
 
-    def _pick_rule(self, rules: List[RouteRule]) -> int:
+    def _pick_rule(self, rules: list[RouteRule]) -> int:
         """Pick a random rule index."""
         return self._rng.randrange(len(rules))
 
-    def _mut_swap_model(self, config: RouteConfig) -> Tuple[RouteConfig, str]:
+    def _mut_swap_model(self, config: RouteConfig) -> tuple[RouteConfig, str]:
         """Swap the model for a randomly chosen rule."""
         new_cfg, rules = self._clone_rules(config)
         if not rules:
@@ -362,7 +360,7 @@ class RouteEvolver:
         description = f"swap_model:{rule.role.value}:{old_model}→{new_model}"
         return new_cfg, description
 
-    def _mut_change_timeout(self, config: RouteConfig) -> Tuple[RouteConfig, str]:
+    def _mut_change_timeout(self, config: RouteConfig) -> tuple[RouteConfig, str]:
         """Increase or decrease a step timeout by 10–50%."""
         new_cfg, rules = self._clone_rules(config)
         if not rules:
@@ -376,7 +374,7 @@ class RouteEvolver:
         description = f"change_timeout:{rule.role.value}:{old_t}min→{new_t}min"
         return new_cfg, description
 
-    def _mut_change_retry(self, config: RouteConfig) -> Tuple[RouteConfig, str]:
+    def _mut_change_retry(self, config: RouteConfig) -> tuple[RouteConfig, str]:
         """Add or remove a model from a rule's retry chain."""
         new_cfg, rules = self._clone_rules(config)
         if not rules:
@@ -398,7 +396,7 @@ class RouteEvolver:
 
         return new_cfg, description
 
-    def _mut_change_review_n(self, config: RouteConfig) -> Tuple[RouteConfig, str]:
+    def _mut_change_review_n(self, config: RouteConfig) -> tuple[RouteConfig, str]:
         """Adjust review_every_n by ±1 to ±5 cycles."""
         new_cfg, rules = self._clone_rules(config)
         old_n = new_cfg.review_every_n
@@ -408,7 +406,7 @@ class RouteEvolver:
         description = f"change_review_n:{old_n}→{new_n}"
         return new_cfg, description
 
-    def _mut_swap_backend(self, config: RouteConfig) -> Tuple[RouteConfig, str]:
+    def _mut_swap_backend(self, config: RouteConfig) -> tuple[RouteConfig, str]:
         """Change the backend for a randomly chosen rule."""
         new_cfg, rules = self._clone_rules(config)
         if not rules:
@@ -424,7 +422,7 @@ class RouteEvolver:
         description = f"swap_backend:{rule.role.value}:{old_backend.value}→{new_backend.value}"
         return new_cfg, description
 
-    def _mut_change_tier(self, config: RouteConfig) -> Tuple[RouteConfig, str]:
+    def _mut_change_tier(self, config: RouteConfig) -> tuple[RouteConfig, str]:
         """
         Change the tier for a rule (may also change model to match new tier).
         """
@@ -447,7 +445,7 @@ class RouteEvolver:
     # Selection scoring
     # ------------------------------------------------------------------
 
-    def _compute_selection_scores(self) -> List[float]:
+    def _compute_selection_scores(self) -> list[float]:
         """
         Compute per-variant selection weight = fitness_normalised * 0.7 + novelty * 0.3.
 
@@ -457,8 +455,8 @@ class RouteEvolver:
         max_f = max(fitnesses) if fitnesses else 1.0
         max_f = max_f or 1.0  # avoid division by zero
 
-        scores: List[float] = []
-        for variant, raw_f in zip(self._population, fitnesses):
+        scores: list[float] = []
+        for variant, raw_f in zip(self._population, fitnesses, strict=True):
             fitness_norm = raw_f / max_f
             novelty = 1.0 / (1.0 + len(variant.metrics_history))
             score = fitness_norm * 0.7 + novelty * 0.3

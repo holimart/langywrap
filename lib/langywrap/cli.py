@@ -4,11 +4,69 @@ from __future__ import annotations
 
 import json
 import logging
+import shutil
 import subprocess
-import sys
 from pathlib import Path
 
 import click
+
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+
+
+class _StreamFormatter(logging.Formatter):
+    """Format DEBUG lines with a visual indent so they don't break the main flow.
+
+    DEBUG lines (stream events, verbose trace) are indented with ``    │ ``
+    so they nest visually inside the step banner.  Every embedded newline in
+    the message is also indented so multi-line debug blobs stay coherent.
+    INFO/WARNING/ERROR lines use the plain format unchanged.
+    """
+
+    _PLAIN = "%(asctime)s %(levelname)-5s [%(name)s] %(message)s"
+    _DEBUG = "%(asctime)s DEBUG [%(name)s]"
+
+    def __init__(self) -> None:
+        super().__init__(datefmt="%H:%M:%S")
+        self._plain_fmt = logging.Formatter(self._PLAIN, datefmt="%H:%M:%S")
+        self._debug_prefix_fmt = logging.Formatter(self._DEBUG, datefmt="%H:%M:%S")
+
+    def format(self, record: logging.LogRecord) -> str:
+        if record.levelno != logging.DEBUG:
+            return self._plain_fmt.format(record)
+
+        # Build prefix: "HH:MM:SS DEBUG [module]"
+        prefix = self._debug_prefix_fmt.format(record)
+        indent = " " * (len(prefix) + 1)
+        msg = record.getMessage()
+
+        # A leading \n in the message signals "emit a blank separator first"
+        separator = ""
+        if msg.startswith("\n"):
+            separator = "    │"
+            msg = msg.lstrip("\n")
+
+        lines = msg.splitlines() or [""]
+        formatted_lines = []
+        for i, line in enumerate(lines):
+            if len(line) > 200:
+                line = line[:197] + "…"
+            if i == 0:
+                formatted_lines.append(f"    │ {prefix} {line}")
+            else:
+                formatted_lines.append(f"    │ {indent}{line}")
+
+        if separator:
+            formatted_lines.insert(0, separator)
+        return "\n".join(formatted_lines)
+
+
+def _setup_logging(level: int) -> None:
+    handler = logging.StreamHandler()
+    handler.setFormatter(_StreamFormatter())
+    logging.root.setLevel(level)
+    logging.root.addHandler(handler)
 
 
 # ---------------------------------------------------------------------------
@@ -28,11 +86,7 @@ def main(ctx: click.Context, verbose: int) -> None:
         level = logging.INFO
     else:
         level = logging.WARNING
-    logging.basicConfig(
-        level=level,
-        format="%(asctime)s %(levelname)-5s [%(name)s] %(message)s",
-        datefmt="%H:%M:%S",
-    )
+    _setup_logging(level)
 
 
 # ---------------------------------------------------------------------------
@@ -110,6 +164,7 @@ def couple_remove(repo: str) -> None:
         target = repo_path / d
         if target.exists():
             import shutil
+
             shutil.rmtree(target)
             removed.append(d)
     if removed:
@@ -217,7 +272,7 @@ def compound_search(query: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _build_router(project_dir: Path) -> "ExecutionRouter":
+def _build_router(project_dir: Path) -> ExecutionRouter:  # noqa: F821
     """Build an ExecutionRouter from project config, wiring backends + execwrap.
 
     Discovers:
@@ -234,6 +289,7 @@ def _build_router(project_dir: Path) -> "ExecutionRouter":
     env_file = project_dir / ".env"
     if env_file.exists():
         import os
+
         for line in env_file.read_text().splitlines():
             line = line.strip()
             if line and not line.startswith("#") and "=" in line:
@@ -246,6 +302,7 @@ def _build_router(project_dir: Path) -> "ExecutionRouter":
     # Try Python pipeline first (.langywrap/ralph.py)
     route_config = None
     from langywrap.ralph.pipeline import load_pipeline_config
+
     pipeline = load_pipeline_config(project_dir)
     if pipeline is not None:
         route_config = pipeline.to_route_config(project_dir)
@@ -256,38 +313,22 @@ def _build_router(project_dir: Path) -> "ExecutionRouter":
             cfg_path = project_dir / cfg_candidate
             if cfg_path.exists():
                 import yaml as _yaml
+
                 with cfg_path.open() as _fh:
                     _raw = _yaml.safe_load(_fh) or {}
                 if "flow" in _raw:
                     from langywrap.ralph.config_v2 import build_route_config_from_v2
+
                     route_config = build_route_config_from_v2(_raw, project_dir)
                 break
 
     if route_config is None:
         route_config = load_route_config(project_dir)
 
-    # Discover execwrap
-    execwrap = None
-    for candidate in [
-        project_dir / ".exec" / "execwrap.bash",
-        Path.home() / ".langywrap" / "execwrap.bash",
-    ]:
-        if candidate.exists() and candidate.stat().st_mode & 0o111:
-            execwrap = str(candidate)
-            break
+    from langywrap.helpers.discovery import find_execwrap, find_rtk
 
-    # Discover rtk
-    import shutil
-    rtk = shutil.which("rtk")
-    if not rtk:
-        for candidate in [
-            project_dir / ".exec" / "rtk",
-            Path.home() / ".local" / "bin" / "rtk",
-            Path.home() / ".langywrap" / "rtk",
-        ]:
-            if candidate.exists() and candidate.stat().st_mode & 0o111:
-                rtk = str(candidate)
-                break
+    execwrap = find_execwrap(project_dir)
+    rtk = find_rtk(project_dir)
 
     # Discover opencode binary
     opencode_bin = shutil.which("opencode")
@@ -311,6 +352,7 @@ def _build_router(project_dir: Path) -> "ExecutionRouter":
     )
 
     import logging as _logging
+
     stream_output = _logging.getLogger().isEnabledFor(_logging.INFO)
 
     if Backend.CLAUDE in used_backends:
@@ -390,7 +432,6 @@ def ralph_run(config: str, dry_run: bool, budget: int | None, resume: bool, stub
                 click.echo(f"Warning: router setup failed ({exc}), stub mode", err=True)
 
         # Extract throttle from module
-        throttle_utc = ""
         # Check for a Throttle-like attribute or class-level config
         runner = ModuleRunner(
             module,
@@ -421,7 +462,10 @@ def ralph_run(config: str, dry_run: bool, budget: int | None, resume: bool, stub
         except Exception as exc:
             if not dry_run:
                 raise
-            click.echo(f"Warning: router setup failed ({exc}), dry-run continues in stub mode", err=True)
+            click.echo(
+                f"Warning: router setup failed ({exc}), dry-run continues in stub mode",
+                err=True,
+            )
 
     loop = RalphLoop(cfg, router=router)
 
@@ -557,12 +601,8 @@ def router_show(path: str) -> None:
 @click.argument("path", type=click.Path(exists=True), required=False, default=".")
 def router_test(model: str | None, path: str) -> None:
     """Dry-run: ping all configured models (or one) and report reachability."""
-    from langywrap.router.config import load_route_config
-    from langywrap.router.router import ExecutionRouter
-
     project_dir = Path(path).resolve()
-    cfg = load_route_config(project_dir)
-    router_instance = ExecutionRouter(cfg)
+    router_instance = _build_router(project_dir)
     results = router_instance.dry_run()
 
     for role, model_name, reachable in results:

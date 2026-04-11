@@ -6,6 +6,6 @@ Public API:
     PermissionDecision — ALLOW / DENY / ASK
 """
 
-from .engine import SecurityEngine, PermissionDecision
+from .engine import PermissionDecision, SecurityEngine
 
 __all__ = ["SecurityEngine", "PermissionDecision"]

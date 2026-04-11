@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import List, Optional, Tuple
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field
@@ -27,12 +26,12 @@ class PermissionRule(BaseModel):
     """A single permission rule loaded from permissions.yaml."""
 
     pattern: str
-    reason: Optional[str] = None
-    message: Optional[str] = None
-    suggestion: Optional[str] = None
-    alternatives: Optional[List[str]] = None
+    reason: str | None = None
+    message: str | None = None
+    suggestion: str | None = None
+    alternatives: list[str] | None = None
     # action is stored redundantly for rules that live in the flat 'custom' list
-    action: Optional[str] = None  # "deny" | "ask" | "allow"
+    action: str | None = None  # "deny" | "ask" | "allow"
 
     model_config = ConfigDict(extra="allow")
 
@@ -42,12 +41,12 @@ class PermissionsConfig(BaseModel):
 
     version: str = "1.0"
     mode: str = "restrictive"  # restrictive | permissive | paranoid
-    deny: List[PermissionRule] = Field(default_factory=list)
-    ask: List[PermissionRule] = Field(default_factory=list)
-    allow: List[PermissionRule] = Field(default_factory=list)
+    deny: list[PermissionRule] = Field(default_factory=list)
+    ask: list[PermissionRule] = Field(default_factory=list)
+    allow: list[PermissionRule] = Field(default_factory=list)
 
     # source path — set after loading; not part of the YAML schema
-    _source: Optional[Path] = None
+    _source: Path | None = None
 
     model_config = ConfigDict(extra="allow")
 
@@ -56,7 +55,7 @@ class PermissionsConfig(BaseModel):
 # Pattern matching
 # ---------------------------------------------------------------------------
 
-def _parse_command(command: str) -> Tuple[str, str]:
+def _parse_command(command: str) -> tuple[str, str]:
     """Return (program, args_string) from a shell command string."""
     parts = command.split()
     if not parts:
@@ -96,9 +95,13 @@ def match_pattern(command: str, pattern: str) -> bool:
     prog, args_str = _parse_command(command)
 
     # Match program name — prefix match so "mkfs" catches "mkfs.ext4"
-    if cmd_pattern != "*":
-        if prog != cmd_pattern and not prog.startswith(cmd_pattern + ".") and not prog.startswith(cmd_pattern + "/"):
-            return False
+    if (
+        cmd_pattern != "*"
+        and prog != cmd_pattern
+        and not prog.startswith(cmd_pattern + ".")
+        and not prog.startswith(cmd_pattern + "/")
+    ):
+        return False
 
     # Match arguments
     if arg_pattern == "*":
@@ -128,7 +131,7 @@ def _load_yaml(path: Path) -> PermissionsConfig:
     with path.open("r") as fh:
         raw = yaml.safe_load(fh) or {}
 
-    def _rules(key: str) -> List[PermissionRule]:
+    def _rules(key: str) -> list[PermissionRule]:
         return [PermissionRule(**r) for r in (raw.get(key) or [])]
 
     deny_rules = _rules("deny")
@@ -138,7 +141,10 @@ def _load_yaml(path: Path) -> PermissionsConfig:
     if dtp and dtp.get("enabled", False):
         for sf in dtp.get("sensitive_files") or []:
             deny_rules.append(PermissionRule(
-                pattern=f"regex:(?:cat|head|tail|less|more|cp|scp|rsync)\\s+.*{re.escape(sf['pattern'].replace('**/', ''))}",
+                pattern=(
+                    f"regex:(?:cat|head|tail|less|more|cp|scp|rsync)\\s+.*"
+                    f"{re.escape(sf['pattern'].replace('**/', ''))}"
+                ),
                 reason=sf.get("reason", "Sensitive file access"),
                 message=sf.get("message", ""),
                 suggestion=sf.get("suggestion", ""),
@@ -185,7 +191,7 @@ def load_permissions(project_dir: Path) -> PermissionsConfig:
 
     All found files are merged via merge_permissions().
     """
-    candidates: List[Path] = []
+    candidates: list[Path] = []
 
     if _BUNDLED_DEFAULTS.exists():
         candidates.append(_BUNDLED_DEFAULTS)
@@ -233,9 +239,9 @@ def merge_permissions(*configs: PermissionsConfig) -> PermissionsConfig:
     if not configs:
         return PermissionsConfig()
 
-    merged_deny: List[PermissionRule] = []
-    merged_ask: List[PermissionRule] = []
-    merged_allow: List[PermissionRule] = []
+    merged_deny: list[PermissionRule] = []
+    merged_ask: list[PermissionRule] = []
+    merged_allow: list[PermissionRule] = []
 
     seen_deny_patterns: set[str] = set()
     seen_ask_patterns: set[str] = set()

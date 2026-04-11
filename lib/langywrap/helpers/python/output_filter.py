@@ -10,9 +10,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-import yaml
-
-
 # Recommended settings for compact output
 COMPACT_SETTINGS: dict[str, dict[str, Any]] = {
     "pytest": {

@@ -7,9 +7,10 @@ targeting Lean/Mathlib projects.
 from __future__ import annotations
 
 import re
-import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+
+from langywrap.helpers.process import run_subprocess
 
 
 @dataclass
@@ -28,24 +29,20 @@ class SorryInfo:
     context: str
 
 
-def lean_build(project_dir: Path, targets: list[str] | None = None, timeout: int = 300) -> LeanCheckResult:
+def lean_build(
+    project_dir: Path, targets: list[str] | None = None, timeout: int = 300
+) -> LeanCheckResult:
     """Run lake build, optionally on specific targets."""
     cmd = ["lake", "build"]
     if targets:
         cmd.extend(targets)
 
-    try:
-        proc = subprocess.run(
-            cmd, cwd=project_dir, capture_output=True, text=True, timeout=timeout
-        )
-        errors = _parse_lean_errors(proc.stderr + proc.stdout)
-        return LeanCheckResult(
-            passed=proc.returncode == 0,
-            errors=errors,
-            output=(proc.stdout + proc.stderr)[-3000:],
-        )
-    except subprocess.TimeoutExpired:
-        return LeanCheckResult(passed=False, output=f"TIMEOUT after {timeout}s")
+    passed, output, _ = run_subprocess(cmd, cwd=project_dir, timeout=timeout)
+    return LeanCheckResult(
+        passed=passed,
+        errors=_parse_lean_errors(output),
+        output=output[-3000:],
+    )
 
 
 def count_sorries(project_dir: Path, src_dir: str = ".") -> list[SorryInfo]:

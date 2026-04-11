@@ -16,16 +16,14 @@ Default routing (crunchdaoobesity pattern):
 
 from __future__ import annotations
 
-import re
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .backends import Backend
-
 
 # ---------------------------------------------------------------------------
 # Enums
@@ -104,9 +102,9 @@ class RouteRule(BaseModel):
     backend: Backend
     tier: ModelTier = ModelTier.MID
     timeout_minutes: int = 30
-    retry_models: List[str] = Field(default_factory=list)
+    retry_models: list[str] = Field(default_factory=list)
     retry_max: int = 2
-    conditions: Dict[str, Any] = Field(default_factory=dict)
+    conditions: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("timeout_minutes")
     @classmethod
@@ -119,12 +117,9 @@ class RouteRule(BaseModel):
     def timeout_seconds(self) -> int:
         return self.timeout_minutes * 60
 
-    def matches_conditions(self, context: Dict[str, Any]) -> bool:
+    def matches_conditions(self, context: dict[str, Any]) -> bool:
         """Return True if all rule conditions match the provided context."""
-        for key, expected in self.conditions.items():
-            if context.get(key) != expected:
-                return False
-        return True
+        return all(context.get(key) == expected for key, expected in self.conditions.items())
 
     model_config = ConfigDict(extra="allow")
 
@@ -152,9 +147,9 @@ class RouteConfig(BaseModel):
 
     name: str = "default"
     description: str = ""
-    rules: List[RouteRule] = Field(default_factory=list)
+    rules: list[RouteRule] = Field(default_factory=list)
     review_every_n: int = 10
-    peak_hours: Optional[Tuple[int, int]] = None
+    peak_hours: tuple[int, int] | None = None
     default_backend: Backend = Backend.CLAUDE
 
     @field_validator("review_every_n")
@@ -164,7 +159,7 @@ class RouteConfig(BaseModel):
             raise ValueError("review_every_n must be > 0")
         return v
 
-    def get_rule(self, role: StepRole, context: Optional[Dict[str, Any]] = None) -> Optional[RouteRule]:
+    def get_rule(self, role: StepRole, context: dict[str, Any] | None = None) -> RouteRule | None:
         """
         Return the first rule matching ``role`` (and conditions if any).
 
@@ -294,7 +289,7 @@ DEFAULT_ROUTE_CONFIG = RouteConfig(
 # ---------------------------------------------------------------------------
 
 
-def _parse_peak_hours(raw: Any) -> Optional[Tuple[int, int]]:
+def _parse_peak_hours(raw: Any) -> tuple[int, int] | None:
     """Parse peak_hours from YAML: list [start, end] or null."""
     if raw is None:
         return None
@@ -303,25 +298,25 @@ def _parse_peak_hours(raw: Any) -> Optional[Tuple[int, int]]:
     raise ValueError(f"peak_hours must be [start_hour, end_hour] or null, got: {raw!r}")
 
 
-def _parse_rule(raw: Dict[str, Any]) -> RouteRule:
+def _parse_rule(raw: dict[str, Any]) -> RouteRule:
     """Parse a single rule dict from YAML."""
     role_str = raw.get("role", "")
     try:
         role = StepRole(role_str)
-    except ValueError:
+    except ValueError as err:
         raise ValueError(
             f"Unknown step role: {role_str!r}. "
             f"Valid roles: {[r.value for r in StepRole]}"
-        )
+        ) from err
 
     backend_str = raw.get("backend", "claude")
     try:
         backend = Backend(backend_str)
-    except ValueError:
+    except ValueError as err:
         raise ValueError(
             f"Unknown backend: {backend_str!r}. "
             f"Valid backends: {[b.value for b in Backend]}"
-        )
+        ) from err
 
     tier_str = raw.get("tier", "mid")
     try:
@@ -369,6 +364,20 @@ def load_route_config(project_dir: Path) -> RouteConfig:
             tier: cheap
             timeout_minutes: 90
     """
+    # Try Python pipeline first (.langywrap/ralph.py).
+    # This is the preferred source — model assignments live in the Pipeline,
+    # not in a separate router.yaml.
+    try:
+        from langywrap.ralph.pipeline import load_pipeline_config
+
+        pipeline = load_pipeline_config(project_dir)
+        if pipeline is not None:
+            route_cfg = pipeline.to_route_config(project_dir)
+            if route_cfg is not None:
+                return route_cfg
+    except Exception:
+        pass  # pipeline unavailable or broken — fall through to YAML
+
     config_path = project_dir / ".langywrap" / "router.yaml"
     if not config_path.exists():
         return DEFAULT_ROUTE_CONFIG
@@ -404,7 +413,7 @@ def save_route_config(config: RouteConfig, project_dir: Path) -> Path:
     config_dir.mkdir(parents=True, exist_ok=True)
     out_path = config_dir / "router.yaml"
 
-    data: Dict[str, Any] = {
+    data: dict[str, Any] = {
         "name": config.name,
         "description": config.description,
         "review_every_n": config.review_every_n,
