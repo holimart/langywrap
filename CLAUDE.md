@@ -15,6 +15,8 @@ coupled to this repo and consume its libraries, hooks, and skills.
 - `harden/` — Repo hardening installer
 - `rtk/` — RTK output compression (git submodule, build from source)
 - `openwolf/` — OpenWolf token-conscious AI brain (git submodule, build from source)
+- `textify/` — LLM-free doc extraction (git submodule, opt-in via `knowledge-graph` extra)
+- `graphify/` — Code-graph skill via tree-sitter + Leiden (git submodule, opt-in via `knowledge-graph` extra)
 - `skills/` — Claude Code slash commands (symlinked globally)
 - `agents/` — Sub-agent definitions (Memento pattern)
 - `experiments/` — HyperAgent evolution archive and configs
@@ -29,9 +31,11 @@ coupled to this repo and consume its libraries, hooks, and skills.
 ./just sync          # uv sync dependencies
 ./just check         # lint + typecheck + test
 ./just dev           # fix + check (full local cycle)
-./just install           # System-wide install (builds RTK, OpenWolf, installs package)
-./just install-rtk       # Build RTK from source only
-./just install-openwolf  # Build OpenWolf from source only
+./just install            # System-wide install (builds RTK, OpenWolf, textify, graphify, installs package)
+./just install-rtk        # Build RTK from source only
+./just install-openwolf   # Build OpenWolf from source only
+./just install-textify    # Install textify submodule (editable) via knowledge-graph extra
+./just install-graphify   # Install graphify submodule (editable) via knowledge-graph extra
 ./just couple PATH   # Couple a downstream repo
 ```
 
@@ -45,7 +49,11 @@ Config: `.langywrap/router.yaml` per coupled repo.
 ### Ralph Loop (Hybrid)
 Python orchestrator (`lib/langywrap/ralph/`) calling subagents via ExecutionRouter.
 5-step pipeline: orient -> plan -> execute -> critic -> finalize.
-Declarative config: `.langywrap/ralph.yaml` per coupled repo.
+Declarative config: `.langywrap/ralph.py` (pydantic Pipeline) per coupled repo.
+Optional per-step enrichment: `Step(..., enrich=["graphify"])` injects a fresh
+code-graph summary into the prompt. Cycle-end rebuild: `post_cycle_commands`
+runs after gates, before commit. Runner warns about stale graphs and
+missing textify preprocessing (see `ralph/context.py:check_graphify_health`).
 
 ### HyperAgents
 Evolution archive in `experiments/archive/`. Mutations + meta-mutations.

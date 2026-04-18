@@ -54,7 +54,7 @@ remembered and shown as defaults.
 
 | Tool | Required | Purpose |
 |------|----------|---------|
-| Python >= 3.10 | Yes | Library runtime |
+| Python >= 3.11 | Yes | Library runtime (pinned to 3.12 via `.python-version`) |
 | git | Yes | Version control |
 | uv | Recommended | Package management (pip fallback) |
 | cargo (Rust) | For RTK | Builds RTK output compressor |
@@ -159,6 +159,32 @@ lib/langywrap/ralph/
 Key feature: **Orient context pre-digestion** — compresses large state files
 (tasks.md, progress.md) by ~11x before feeding to the orient model.
 
+#### Optional: knowledge-graph enrichment
+
+Ralph steps can pull a fresh code-graph summary into their prompt via
+`enrich=["graphify"]` in `.langywrap/ralph.py`, and the cycle can keep the
+graph up to date via `post_cycle_commands`:
+
+```python
+Step("orient", model="haiku", prompt="step1_orient.md",
+     enrich=["graphify"]),
+
+# Runs after gates, before commit — non-zero exits are warnings.
+post_cycle_commands=[
+    "textify docs graphify-in/docs || true",  # LLM-free doc flatten
+    "graphify update .",                       # LLM-free code re-index
+],
+```
+
+`graphify` and `textify` are vendored as submodules and installed via
+langywrap's `knowledge-graph` uv extra (`uv sync --extra knowledge-graph`,
+or `./just install-graphify` / `./just install-textify`). Run
+`/graphify-setup` in a coupled repo for an interactive setup that seeds
+`.graphifyignore` and optionally wires a post-commit hook. Runner warns at
+loop start if enrichment is enabled but no rebuild is scheduled, or if
+`graphify .` (full build) is used without `textify` preceding it (avoids
+silent LLM consumption on binary docs).
+
 ### HyperAgents + Memento Skills
 
 Agent evolution framework. Every coupled repo participates via ralph loops.
@@ -229,6 +255,8 @@ langywrap/
   execwrap/             Universal 5-layer execution wrapper
   harden/               Repo hardening installer
   rtk/                  Output compression (git submodule, build from source)
+  textify/              LLM-free doc extraction (git submodule, opt-in via knowledge-graph extra)
+  graphify/             Code-graph skill (git submodule, opt-in via knowledge-graph extra)
   experiments/          HyperAgent archive + evolution configs
   skills/               Claude Code slash commands
   agents/               Sub-agent definitions

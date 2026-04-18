@@ -28,6 +28,70 @@ Design and implement an autonomous tree-search experimentation loop that iterati
 
 ---
 
+## Optional: Knowledge-Graph Enrichment
+
+Ralph steps can pull a fresh **code-graph summary** into the step prompt via
+`enrich=["graphify"]`, and the cycle can keep the graph current via
+`post_cycle_commands` (run after gates, before commit — non-zero exits are
+warnings, never abort the cycle):
+
+```python
+from langywrap.ralph.pipeline import Pipeline, Step
+
+config = Pipeline(
+    steps=[
+        Step("orient", model="haiku", prompt="step1_orient.md",
+             enrich=["graphify"]),
+        Step("plan", model="opus", prompt="step2_plan.md",
+             enrich=["graphify"]),
+        Step("critic", model="sonnet", prompt="step3c_critic.md",
+             enrich=["graphify"]),
+        # ...
+    ],
+    post_cycle_commands=[
+        "textify docs graphify-in/docs || true",  # LLM-free: flatten binary docs
+        "graphify update .",                       # LLM-free: tree-sitter re-index
+    ],
+    post_cycle_command_timeout=180,
+)
+```
+
+**LLM-free protocol** — the runner warns at startup if the protocol is broken:
+
+- `graphify update <path>` uses tree-sitter only (no LLM, per graphify's own docs).
+- `graphify .` (no subcommand) triggers a full build and **will consume tokens**
+  on binary docs unless `textify` flattens them first. The runner emits a warning
+  in that case.
+- If enrichment is enabled on any step but `post_cycle_commands` has no
+  `graphify update` / rebuild entry, the runner warns that enriched prompts
+  may be stale.
+
+**Installation** — graphify and textify are vendored submodules of langywrap.
+In the coupled repo's `pyproject.toml`, add:
+
+```toml
+[project.optional-dependencies]
+knowledge-graph = [
+    "textify[full]",
+    "graphifyy",
+]
+
+[tool.uv.sources]
+textify   = { path = "/absolute/path/to/langywrap/textify",  editable = true }
+graphifyy = { path = "/absolute/path/to/langywrap/graphify", editable = true }
+```
+
+Then `uv sync --extra knowledge-graph` from the coupled repo installs both
+binaries into its own venv. Run `/graphify-setup` once for an interactive
+setup (seeds `.graphifyignore`, optionally wires a post-commit hook).
+
+**Triple-enrichment avoidance** — enrichment can be delivered via three
+channels (step-prompt injection, MCP server, PreToolUse hook). The runner
+detects if more than one is active and warns — pick exactly one, otherwise
+the same summary lands in the context multiple times.
+
+---
+
 ## Background Knowledge
 
 ### The Ralph Pattern (Core Mechanics)

@@ -13,6 +13,11 @@
 #   3 + stdout  Ask rule matched → rewrite but let Claude Code prompt
 # =============================================================================
 
+# Skip when invoked from a child claude/opencode process spawned by langywrap's
+# ExecutionRouter (see lib/langywrap/router/backends.py). Prevents the same
+# PreToolUse hook from firing in both parent and nested sessions.
+[ "${__EXECWRAP_ACTIVE:-}" = "1" ] && exit 0
+
 # Require jq for JSON manipulation
 if ! command -v jq &>/dev/null; then
   exit 0

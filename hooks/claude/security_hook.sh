@@ -11,6 +11,11 @@
 
 set -euo pipefail
 
+# Skip when invoked from a child claude/opencode process spawned by langywrap's
+# ExecutionRouter (see lib/langywrap/router/backends.py). Prevents the same
+# PreToolUse hook from firing in both parent and nested sessions.
+[ "${__EXECWRAP_ACTIVE:-}" = "1" ] && exit 0
+
 # --- Read tool input from stdin ---
 INPUT=$(cat)
 TOOL_NAME=$(echo "$INPUT" | jq -r '.tool_name // empty' 2>/dev/null)
