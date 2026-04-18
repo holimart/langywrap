@@ -56,12 +56,23 @@ def _resolve_model(name: str, extra: dict[str, str] | None = None) -> str:
 def _infer_backend(model: str) -> str:
     """Infer backend from model prefix.
 
-    Claude models (claude-* prefix) always use claudecode.
-    Everything else — NVIDIA NIM, OpenRouter, OpenAI, Mistral, Google, etc —
-    uses opencode.
+    This is used when a Step doesn't explicitly set ``engine``.
+
+    Supported prefixes:
+    - ``openrouter/`` → openrouter
+    - ``claude-`` / ``gpt-`` / ``o1-`` / ``o3-`` → direct_api
+    - otherwise → opencode
     """
-    if model.startswith("claude-"):
-        return "claude"
+    m = model.strip()
+    if m.startswith("openrouter/"):
+        return "openrouter"
+    if (
+        m.startswith("claude-")
+        or m.startswith("gpt-")
+        or m.startswith("o1-")
+        or m.startswith("o3-")
+    ):
+        return "direct_api"
     return "opencode"
 
 
@@ -267,6 +278,17 @@ class Step(BaseModel):
     enabled: bool = True
     """HyperAgent-togglable. If False, step is skipped."""
 
+    enrich: list[str] = Field(default_factory=list)
+    """External context enrichers to inject before the prompt body.
+
+    Resolved by name against ``ralph.context.ENRICHERS``. Built-in:
+        'graphify' — reads graphify-out/GRAPH_REPORT.md (capped 20KB).
+
+    Prefer for ``orient``/``critic`` steps; skip ``execute`` (grep beats
+    graphs there per SWE-bench evidence). Missing source files silently
+    no-op, so pipelines are safe on repos without graphify installed.
+    HyperAgent genome includes this list — evolution can toggle per role."""
+
     def __init__(self, name: str = "", **kwargs: Any) -> None:
         if "token" in kwargs and "confirmation_token" not in kwargs:
             kwargs["confirmation_token"] = kwargs.pop("token")
@@ -411,6 +433,24 @@ class Pipeline(BaseModel):
 
     git: list[str] = Field(default_factory=list)
     """Git paths to stage after each cycle."""
+
+    post_cycle_commands: list[str] = Field(default_factory=list)
+    """Shell commands run at the end of every cycle, before git commit.
+
+    Fires regardless of commit outcome. Non-zero exits are warnings, not
+    failures. Intended for refreshing external indices so updates land in
+    the same commit as the code that triggered them::
+
+        Pipeline(
+            post_cycle_commands=[
+                "./textify/src/textify/cli.py docs graphify-in/docs || true",
+                "graphify --update",
+            ],
+            ...
+        )"""
+
+    post_cycle_command_timeout: int = 120
+    """Per-command timeout (seconds) for ``post_cycle_commands``."""
 
     secrets: list[str] = Field(
         default_factory=lambda: [r"\.env$", "credentials", "secret", "api_key"]
@@ -622,6 +662,8 @@ class Pipeline(BaseModel):
             periodic_tasks=periodic_tasks,
             git_commit_after_cycle=True,
             git_add_paths=self.git,
+            post_cycle_commands=list(self.post_cycle_commands),
+            post_cycle_command_timeout=self.post_cycle_command_timeout,
             scope_restriction=self.scope,
             secret_patterns=self.secrets,
             verbose=self.verbose,
@@ -708,6 +750,7 @@ class Pipeline(BaseModel):
                     "enabled": item.enabled,
                     "fail_fast": item.fail_fast,
                     "tools": item.tools,
+                    "enrich": list(item.enrich),
                 }
                 if item.fallback:
                     genome[item.name]["fallback"] = item.fallback
@@ -778,6 +821,8 @@ class Pipeline(BaseModel):
                         new.steps[i] = item.model_copy(update={"fail_fast": value})
                     elif field == "fallback":
                         new.steps[i] = item.model_copy(update={"fallback": value})
+                    elif field == "enrich":
+                        new.steps[i] = item.model_copy(update={"enrich": list(value)})
                     break
                 elif isinstance(item, Loop) and item.name == step_name:
                     if field == "max":
@@ -865,6 +910,7 @@ class Pipeline(BaseModel):
             fail_fast=step.fail_fast,
             pipeline=step.pipeline,
             every_n=step.every,
+            enrich=list(step.enrich),
         )
 
     def _loop_to_step_configs(self, loop: Loop, prompts_dir: Path) -> list[StepConfig]:  # noqa: F821
@@ -908,7 +954,10 @@ class Pipeline(BaseModel):
 
         resolve = lambda name: _resolve_model(name, self.aliases)  # noqa: E731
         model_id = resolve(step.model)
-        backend = Backend(_infer_backend(model_id))
+        if step.engine and step.engine != "auto":
+            backend = Backend(step.engine)
+        else:
+            backend = Backend(_infer_backend(model_id))
 
         # Build retry models from fallback chain
         retry_models: list[str] = []
@@ -928,6 +977,7 @@ class Pipeline(BaseModel):
             backend=backend,
             retry_models=retry_models,
             retry_max=2,
+            timeout_minutes=step.timeout,
         )
 
 

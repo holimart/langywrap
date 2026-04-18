@@ -5,8 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-
-from langywrap.ralph.state import CycleResult, RalphState, TaskEntry, TaskStatus
+from langywrap.ralph.state import CycleResult, RalphState
 
 
 @pytest.fixture
@@ -76,7 +75,8 @@ class TestOrientContextCompression:
         lines = []
         for i in range(100):
             status = "x" if i < 90 else " "
-            lines.append(f"- [{status}] **[P1] Task {i}**\n  - Status: {'COMPLETED' if i < 90 else 'PENDING'}\n")
+            task_status = "COMPLETED" if i < 90 else "PENDING"
+            lines.append(f"- [{status}] **[P1] Task {i}**\n  - Status: {task_status}\n")
         (state_dir / "tasks.md").write_text("\n".join(lines))
 
         # Create large progress.md

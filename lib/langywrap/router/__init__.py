@@ -55,6 +55,8 @@ from .backends import (
     OpenCodeBackend,
     OpenRouterBackend,
     SubagentResult,
+    ThinkingLoopBackend,
+    ThinkingLoopBackendConfig,
     create_backend,
 )
 from .config import (
@@ -90,6 +92,8 @@ __all__ = [
     "OpenRouterBackend",
     "DirectAPIBackend",
     "MockBackend",
+    "ThinkingLoopBackend",
+    "ThinkingLoopBackendConfig",
     "create_backend",
     # Evolution
     "RouteEvolver",

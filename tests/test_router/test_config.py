@@ -4,12 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-import yaml
-
 from langywrap.router.config import (
     DEFAULT_ROUTE_CONFIG,
-    RouteConfig,
     RouteRule,
     StepRole,
     load_route_config,

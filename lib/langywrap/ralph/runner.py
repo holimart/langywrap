@@ -9,14 +9,21 @@ from __future__ import annotations
 
 import logging
 import re
+import select
 import subprocess
+import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from langywrap.ralph.config import QualityGateConfig, RalphConfig, StepConfig, StepRole
-from langywrap.ralph.context import build_full_prompt, build_orient_context
+from langywrap.ralph.context import (
+    build_full_prompt,
+    build_orient_context,
+    check_graphify_health,
+    detect_enrichment_channels,
+)
 from langywrap.ralph.state import CycleResult, RalphState
 from langywrap.ralph.step_logger import StepLogger
 
@@ -110,6 +117,9 @@ class RalphLoop:
         self._log(f"  State dir: {self.config.resolved_state_dir}")
         self._log(f"  Steps:     {[s.name for s in self.config.steps]}")
 
+        self._warn_redundant_enrichment()
+        self._verify_graphify_health()
+
         for cycle_num in range(start_cycle, end_cycle + 1):
             pending = self.state.pending_count()
             if pending == 0:
@@ -193,7 +203,8 @@ class RalphLoop:
                 consecutive_failures += 1
                 self._log(
                     "WARNING: cycle classified as FAILED "
-                    f"({consecutive_failures}/{self.config.max_consecutive_failed_cycles} consecutive)"
+                    f"({consecutive_failures}/"
+                    f"{self.config.max_consecutive_failed_cycles} consecutive)"
                 )
             else:
                 consecutive_failures = 0
@@ -484,6 +495,10 @@ class RalphLoop:
                 result.quality_gate_passed = False
             self._log(f"  Quality gate ({label}): {'PASS' if qg_pass else 'FAIL'}")
 
+        # Post-cycle commands (e.g. textify / graphify --update).
+        # Run BEFORE commit so refreshed indices are staged together.
+        self._run_post_cycle_commands(cycle_num)
+
         # Git commit
         if self.config.git_commit_after_cycle:
             plan_summary = self._extract_plan_summary()
@@ -598,6 +613,7 @@ class RalphLoop:
             orient_context=orient_context if is_orient else "",
             scope_restriction=self.config.scope_restriction,
             is_orient_step=is_orient,
+            enrichments=step.enrich,
         )
 
     # ------------------------------------------------------------------
@@ -876,7 +892,8 @@ class RalphLoop:
 
         if not success:
             self._log(
-                f"    [{step.name}] Step execution failed before retry gate; preserving failure state"
+                f"    [{step.name}] Step execution failed before retry gate;"
+                " preserving failure state"
             )
             return output, False, sr
 
@@ -944,6 +961,90 @@ class RalphLoop:
     # Peak-hour throttle
     # ------------------------------------------------------------------
 
+    def _run_post_cycle_commands(self, cycle_num: int) -> None:
+        """Run ``post_cycle_commands`` sequentially before commit.
+
+        Each command is advisory: timeouts and non-zero exits are logged and
+        the next command continues. The goal is that a broken graph rebuild
+        never breaks the ralph cycle itself. Output is truncated in logs so
+        verbose indexers (graphify, textify) don't swamp cycle reports.
+        """
+        commands = self.config.post_cycle_commands
+        if not commands:
+            return
+        import subprocess
+
+        timeout = max(5, int(self.config.post_cycle_command_timeout))
+        self._log(f"\n  Post-cycle commands ({len(commands)}):")
+        for cmd in commands:
+            label = cmd if len(cmd) <= 80 else cmd[:77] + "..."
+            self._log(f"    $ {label}")
+            try:
+                cp = subprocess.run(
+                    cmd,
+                    shell=True,
+                    cwd=self.config.project_dir,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout,
+                    check=False,
+                )
+            except subprocess.TimeoutExpired:
+                self._log(f"    [warn] timed out after {timeout}s — skipped")
+                continue
+            except OSError as e:
+                self._log(f"    [warn] {e} — skipped")
+                continue
+            if cp.returncode != 0:
+                err = (cp.stderr or cp.stdout or "").strip().splitlines()
+                tail = err[-1] if err else f"exit {cp.returncode}"
+                self._log(f"    [warn] exit {cp.returncode}: {tail[:200]}")
+            else:
+                self._log("    ok")
+
+    def _verify_graphify_health(self) -> None:
+        """Preflight check for Graphify/Textify usage. Advisory only.
+
+        Graphify and Textify ship as vendored submodules of langywrap and are
+        installed by ``./just install`` (editable). The runner never mutates
+        the Python environment at loop start — if a binary is missing, it
+        points the operator at the install command and proceeds.
+
+        Warnings reported:
+          - enrich=['graphify'] set but graphify not on PATH
+          - post_cycle_commands references graphify/textify but CLI missing
+          - enrich=['graphify'] set but no post-cycle rebuild → stale graph
+        """
+        report = check_graphify_health(
+            self.config.project_dir,
+            [list(s.enrich) for s in self.config.steps],
+            list(self.config.post_cycle_commands),
+        )
+        issues = report.get("issues") or []
+        if issues:
+            self._log(f"  [graphify preflight] {len(issues)} issue(s):")
+            for msg in issues:
+                self._log(f"    - {msg}")
+
+    def _warn_redundant_enrichment(self) -> None:
+        """Warn once at loop start if the same enrichment is wired via ≥2 channels.
+
+        Graphify can feed the model via prompt injection, MCP tool calls, and
+        PreToolUse hooks. Enabling more than one doubles/triples token cost for
+        no added signal. This check is advisory — it never aborts the loop.
+        """
+        flags = detect_enrichment_channels(
+            self.config.project_dir,
+            [list(s.enrich) for s in self.config.steps],
+        )
+        active = [k for k, v in flags.items() if v]
+        if len(active) >= 2:
+            self._log(
+                f"  [warn] Graphify active on {len(active)} channels ({', '.join(active)}). "
+                "Pick ONE of: step.enrich=['graphify'] / .langywrap/mcp.json / "
+                "PreToolUse hook — multiple paths duplicate context."
+            )
+
     def _wait_if_peak_hours(self) -> None:
         """Block until off-peak if throttle is configured."""
         start = self.config.throttle_utc_start
@@ -964,11 +1065,34 @@ class RalphLoop:
             if start <= hour < end:
                 minutes_left = (end - hour) * 60 - now.minute
                 self._log(
-                    f"  [PEAK HOURS] {now:%H:%M} UTC — pausing. Off-peak in ~{minutes_left}m."
+                    f"  [PEAK HOURS] {now:%H:%M} UTC — pausing. Off-peak in ~{minutes_left}m. "
+                    "Press ENTER to resume now."
                 )
-                time.sleep(60)  # re-check every minute
+                if self._wait_or_enter(60):
+                    self._log("  [PEAK HOURS] ENTER pressed — resuming immediately.")
+                    return
             else:
                 return
+
+    @staticmethod
+    def _wait_or_enter(seconds: float) -> bool:
+        """Sleep up to ``seconds``, returning True if ENTER was pressed on stdin.
+
+        Falls back to plain ``time.sleep`` when stdin is not an interactive TTY
+        (e.g. under nohup, systemd, cron) so background runs behave unchanged.
+        """
+        try:
+            if not sys.stdin.isatty():
+                time.sleep(seconds)
+                return False
+            ready, _, _ = select.select([sys.stdin], [], [], seconds)
+            if ready:
+                sys.stdin.readline()
+                return True
+            return False
+        except (OSError, ValueError):
+            time.sleep(seconds)
+            return False
 
     def _should_skip_throttle(self) -> bool:
         """Return True when the configured primary backend should bypass throttle."""

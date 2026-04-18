@@ -220,6 +220,56 @@ def scaffold_new(name: str, template: str, output: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# mcp
+# ---------------------------------------------------------------------------
+
+
+@main.group()
+def mcp() -> None:
+    """Manage project-level MCP server registrations."""
+
+
+@mcp.command("register")
+@click.option("--repo", default=".", show_default=True, help="Target repository root.")
+@click.option("--name", required=True, help="MCP server name.")
+@click.option("--command", "command_", required=True, help="Server command.")
+@click.option("--arg", "args", multiple=True, help="Repeat for multiple command arguments.")
+@click.option("--env", "env_vars", multiple=True, help="Environment entries in KEY=VALUE form.")
+def mcp_register(
+    repo: str, name: str, command_: str, args: tuple[str, ...], env_vars: tuple[str, ...]
+) -> None:
+    """Register one MCP server into .mcp.json."""
+    from langywrap.mcp_config import register_mcp_server
+
+    env: dict[str, str] = {}
+    for item in env_vars:
+        if "=" not in item:
+            raise click.ClickException(f"Invalid --env value: {item!r} (expected KEY=VALUE)")
+        key, value = item.split("=", 1)
+        env[key] = value
+
+    config_path = Path(repo).resolve() / ".mcp.json"
+    register_mcp_server(
+        config_path,
+        name=name,
+        command=command_,
+        args=list(args),
+        env=env or None,
+    )
+    click.echo(f"Registered MCP server '{name}' in {config_path}")
+
+
+@mcp.command("sync")
+@click.option("--repo", default=".", show_default=True, help="Target repository root.")
+def mcp_sync(repo: str) -> None:
+    """Sync .langywrap/mcp.json into project .mcp.json."""
+    from langywrap.mcp_config import sync_langywrap_mcp_manifest
+
+    out_path = sync_langywrap_mcp_manifest(Path(repo).resolve())
+    click.echo(f"Synced MCP config to {out_path}")
+
+
+# ---------------------------------------------------------------------------
 # compound
 # ---------------------------------------------------------------------------
 

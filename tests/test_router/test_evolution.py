@@ -4,10 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from langywrap.hyperagents.archive import AgentVariant, Archive
-from langywrap.hyperagents.mutations import MutationType, mutate
+from langywrap.hyperagents.mutations import mutate
 
 
 class TestArchive:

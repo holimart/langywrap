@@ -313,10 +313,9 @@ class ExecutionRouter:
             else:
                 logger.warning("Unknown engine %r, ignoring override", engine)
 
-        # Claude models always run on claudecode regardless of engine override.
-        # haiku/opus/sonnet aliases resolve to claude-* before reaching here.
-        if _infer_backend_from_model(rule.model) == Backend.CLAUDE:
-            rule = rule.model_copy(update={"backend": Backend.CLAUDE})
+        # Historically, claude-* implied Backend.CLAUDE (Claude Code).
+        # Allow explicit overrides (e.g. direct_api/openrouter) for server use.
+        # If you want Claude Code, set backend=claude in the route rule.
 
         model_chain = [rule.model] + list(rule.retry_models)
         max_attempts = rule.retry_max + 1  # first attempt + retries

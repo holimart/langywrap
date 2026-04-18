@@ -4,3 +4,9 @@
 [submodule "openwolf"]
 	path = openwolf
 	url = https://github.com/cytostack/openwolf.git
+[submodule "textify"]
+	path = textify
+	url = https://github.com/holimart/textify.git
+[submodule "graphify"]
+	path = graphify
+	url = https://github.com/safishamsi/graphify.git

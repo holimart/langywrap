@@ -33,6 +33,8 @@ STATE_FILE="$LANGYWRAP_CONFIG_DIR/install_state.env"
 OPT_PYTHON_PACKAGE=true
 OPT_RTK=true
 OPT_OPENWOLF=true
+OPT_TEXTIFY=true
+OPT_GRAPHIFY=true
 OPT_GLOBAL_CONFIG=true
 OPT_GLOBAL_MODE="symlinks"   # symlinks | copy
 OPT_EXECWRAP=true
@@ -127,6 +129,8 @@ save_state() {
 OPT_PYTHON_PACKAGE=$OPT_PYTHON_PACKAGE
 OPT_RTK=$OPT_RTK
 OPT_OPENWOLF=$OPT_OPENWOLF
+OPT_TEXTIFY=$OPT_TEXTIFY
+OPT_GRAPHIFY=$OPT_GRAPHIFY
 OPT_GLOBAL_CONFIG=$OPT_GLOBAL_CONFIG
 OPT_GLOBAL_MODE=$OPT_GLOBAL_MODE
 OPT_EXECWRAP=$OPT_EXECWRAP
@@ -236,7 +240,9 @@ feature_wizard() {
     echo -e "  ${GREEN} 1)${NC} Python package    — lib/langywrap/ installed via uv/pip (editable mode)"
     echo -e "  ${GREEN} 2)${NC} RTK compression   — Build token-saving output compressor from source"
     echo -e "  ${GREEN} 3)${NC} OpenWolf          — Token-conscious AI brain for Claude Code (~80% savings)"
-    echo -e "  ${GREEN} 4)${NC} Global config     — Manage ~/.claude/ hooks, settings, CLAUDE.md"
+    echo -e "  ${GREEN} 4)${NC} Textify           — LLM-free doc extraction (PDF/DOCX/XLSX/HTML/OCR)"
+    echo -e "  ${GREEN} 5)${NC} Graphify          — Code knowledge graph (tree-sitter + Leiden communities)"
+    echo -e "  ${GREEN} 6)${NC} Global config     — Manage ~/.claude/ hooks, settings, CLAUDE.md"
     echo -e ""
     echo -e "${BOLD}Security:${NC}"
     echo -e "  ${GREEN} 5)${NC} ExecWrap          — 5-layer execution wrapper for AI tools"
@@ -259,7 +265,9 @@ feature_wizard() {
     ask_yn "  1) Install Python package?" "$(default_yn $OPT_PYTHON_PACKAGE)" && OPT_PYTHON_PACKAGE=true || OPT_PYTHON_PACKAGE=false
     ask_yn "  2) Build RTK from source?" "$(default_yn $OPT_RTK)" && OPT_RTK=true || OPT_RTK=false
     ask_yn "  3) Build OpenWolf from source?" "$(default_yn $OPT_OPENWOLF)" && OPT_OPENWOLF=true || OPT_OPENWOLF=false
-    ask_yn "  4) Set up global Claude config?" "$(default_yn $OPT_GLOBAL_CONFIG)" && OPT_GLOBAL_CONFIG=true || OPT_GLOBAL_CONFIG=false
+    ask_yn "  4) Install Textify (submodule, editable)?" "$(default_yn $OPT_TEXTIFY)" && OPT_TEXTIFY=true || OPT_TEXTIFY=false
+    ask_yn "  5) Install Graphify (submodule, editable)?" "$(default_yn $OPT_GRAPHIFY)" && OPT_GRAPHIFY=true || OPT_GRAPHIFY=false
+    ask_yn "  6) Set up global Claude config?" "$(default_yn $OPT_GLOBAL_CONFIG)" && OPT_GLOBAL_CONFIG=true || OPT_GLOBAL_CONFIG=false
 
     if $OPT_GLOBAL_CONFIG; then
         local mode
@@ -358,6 +366,56 @@ WRAPPER
     else
         warn "OpenWolf built but --version check failed"
     fi
+}
+
+install_textify() {
+    if ! $OPT_TEXTIFY; then return; fi
+    header "Installing Textify (editable, from submodule)"
+
+    if ! command -v uv &>/dev/null; then
+        warn "uv not found — skipping Textify. Install uv: https://docs.astral.sh/uv/"
+        return
+    fi
+
+    # Ensure submodule is checked out (cheap no-op if already done)
+    if [[ ! -f "$LANGYWRAP_DIR/textify/pyproject.toml" ]]; then
+        step "Initializing textify submodule..."
+        (cd "$LANGYWRAP_DIR" && git submodule update --init textify 2>&1 | tail -3)
+    fi
+
+    if dry "uv pip install -e $LANGYWRAP_DIR/textify[full]"; then return; fi
+
+    step "Installing Textify (+[full] extras for PDF/DOCX/OCR)..."
+    (cd "$LANGYWRAP_DIR" && uv pip install -e "textify[full]" 2>&1 | tail -3) \
+        || { warn "Textify install failed — continuing"; return; }
+
+    ok "Textify installed (editable: $LANGYWRAP_DIR/textify)"
+}
+
+install_graphify() {
+    if ! $OPT_GRAPHIFY; then return; fi
+    header "Installing Graphify (editable, from submodule)"
+
+    if ! command -v uv &>/dev/null; then
+        warn "uv not found — skipping Graphify. Install uv: https://docs.astral.sh/uv/"
+        return
+    fi
+
+    if [[ ! -f "$LANGYWRAP_DIR/graphify/pyproject.toml" ]]; then
+        step "Initializing graphify submodule..."
+        (cd "$LANGYWRAP_DIR" && git submodule update --init graphify 2>&1 | tail -3)
+    fi
+
+    if dry "uv pip install -e $LANGYWRAP_DIR/graphify"; then return; fi
+
+    local pin
+    pin=$(cd "$LANGYWRAP_DIR/graphify" && git describe --tags --always 2>/dev/null || echo "unknown")
+    info "Graphify pinned commit: $pin"
+    step "Installing Graphify..."
+    (cd "$LANGYWRAP_DIR" && uv pip install -e "graphify" 2>&1 | tail -3) \
+        || { warn "Graphify install failed — continuing"; return; }
+
+    ok "Graphify installed (editable: $LANGYWRAP_DIR/graphify @ $pin)"
 }
 
 install_global_config() {
@@ -542,6 +600,8 @@ main() {
     $OPT_PYTHON_PACKAGE && ok "Python package (editable)" || echo -e "  ${DIM}Skip: Python package${NC}"
     $OPT_RTK && ok "RTK (build from source)" || echo -e "  ${DIM}Skip: RTK${NC}"
     $OPT_OPENWOLF && ok "OpenWolf (build from source)" || echo -e "  ${DIM}Skip: OpenWolf${NC}"
+    $OPT_TEXTIFY && ok "Textify (editable submodule)" || echo -e "  ${DIM}Skip: Textify${NC}"
+    $OPT_GRAPHIFY && ok "Graphify (editable submodule)" || echo -e "  ${DIM}Skip: Graphify${NC}"
     $OPT_GLOBAL_CONFIG && ok "Global config ($OPT_GLOBAL_MODE)" || echo -e "  ${DIM}Skip: Global config${NC}"
     $OPT_EXECWRAP && ok "ExecWrap wrapper" || echo -e "  ${DIM}Skip: ExecWrap${NC}"
     $OPT_SECURITY_HOOKS && ok "Security hooks" || echo -e "  ${DIM}Skip: Security hooks${NC}"
@@ -559,6 +619,8 @@ main() {
     install_python_package
     install_rtk
     install_openwolf
+    install_textify
+    install_graphify
     install_system_permissions
     install_global_config
     install_hyperagents

@@ -4,10 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
-from langywrap.security.engine import PermissionDecision, SecurityEngine, SecurityResult
-from langywrap.security.permissions import PermissionRule, PermissionsConfig
+from langywrap.security.engine import PermissionDecision, SecurityEngine
 
 
 class TestSecurityEngine:

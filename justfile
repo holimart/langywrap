@@ -20,6 +20,14 @@ install-rtk:
 install-openwolf:
     @bash scripts/build_openwolf.sh
 
+# Install textify (LLM-free doc extraction) from the vendored submodule
+install-textify:
+    @bash scripts/build_textify.sh
+
+# Install graphify (code knowledge graph) from the vendored submodule
+install-graphify:
+    @bash scripts/build_graphify.sh
+
 # Couple a downstream project to langywrap
 # Usage: just couple /path/to/project [--minimal|--full|--security-only]
 couple path *args:

@@ -74,6 +74,7 @@ class Backend(str, Enum):
     OPENROUTER = "openrouter"
     DIRECT_API = "direct_api"
     MOCK = "mock"
+    THINKING_LOOP = "thinking_loop"
 
 
 class BackendConfig:
@@ -104,6 +105,13 @@ class BackendConfig:
     rtk_path:
         Optional path to the ``rtk`` binary.  When set, every subprocess call
         is prefixed with ``rtk --`` for output compression/routing.
+    idle_timeout_seconds:
+        Kill the subprocess if no new output bytes arrive for this many seconds.
+        ``None`` uses the backend's built-in default (``_IDLE_HANG_SECONDS``).
+    cwd:
+        Working directory for the subprocess.  ``None`` inherits the caller's
+        current directory.  Used by ``OpenCodeBackend`` to run opencode inside
+        a specific project directory.
     """
 
     def __init__(
@@ -117,6 +125,11 @@ class BackendConfig:
         execwrap_path: str | None = None,
         rtk_path: str | None = None,
         stream_output: bool = False,
+        idle_timeout_seconds: int | None = None,
+        cwd: str | None = None,
+        # OpenCode-specific: when False, do not override XDG_DATA_HOME and do
+        # not seed auth from env. This allows using opencode's own OAuth/login.
+        opencode_isolate_xdg: bool = True,
     ) -> None:
         self.type = type
         self.binary_path = binary_path
@@ -127,6 +140,9 @@ class BackendConfig:
         self.execwrap_path = execwrap_path
         self.rtk_path = rtk_path
         self.stream_output = stream_output
+        self.idle_timeout_seconds = idle_timeout_seconds
+        self.cwd = cwd
+        self.opencode_isolate_xdg = opencode_isolate_xdg
 
 
 @dataclass
@@ -368,6 +384,22 @@ def wrap_cmd(
 _IDLE_HANG_SECONDS = 900  # 15 minutes
 
 
+def _sync_project_mcp_config(project_dir: str | None) -> Path | None:
+    """Sync .langywrap/mcp.json into .mcp.json when present."""
+    if not project_dir:
+        return None
+    repo = Path(project_dir)
+    manifest = repo / ".langywrap" / "mcp.json"
+    if not manifest.exists():
+        return None
+    try:
+        from langywrap.mcp_config import sync_langywrap_mcp_manifest
+
+        return sync_langywrap_mcp_manifest(repo)
+    except Exception:
+        return None
+
+
 @dataclass
 class _StreamResult:
     """Outcome of :func:`_run_with_idle_watchdog`."""
@@ -594,6 +626,7 @@ def _run_with_idle_watchdog(
     stdin_data: bytes | None = None,
     use_setsid: bool = False,
     stream_output: bool = False,
+    cwd: str | None = None,
 ) -> _StreamResult:
     """Run *cmd* with a Popen streaming reader + idle-timeout watchdog.
 
@@ -633,6 +666,7 @@ def _run_with_idle_watchdog(
             stderr=subprocess.STDOUT,
             env=env,
             start_new_session=use_setsid,
+            cwd=cwd,
         )
     except Exception as exc:
         return _StreamResult(
@@ -959,9 +993,12 @@ class OpenCodeBackend:
     ) -> SubagentResult:
         effective_timeout = min(timeout, self.config.timeout_seconds)
 
-        xdg_tmp = tempfile.mkdtemp(prefix="opencode_")
+        xdg_tmp: str | None = None
         try:
-            _seed_opencode_auth(xdg_tmp)
+            _sync_project_mcp_config(self.config.cwd)
+            if self.config.opencode_isolate_xdg:
+                xdg_tmp = tempfile.mkdtemp(prefix="opencode_")
+                _seed_opencode_auth(xdg_tmp)
 
             cmd = wrap_cmd(
                 [
@@ -977,14 +1014,14 @@ class OpenCodeBackend:
                 self.config.rtk_path,
             )
 
-            env = _build_env(
-                self.config,
-                {
-                    "__EXECWRAP_ACTIVE": "1",
-                    "XDG_DATA_HOME": xdg_tmp,
-                    "SHELL": "/bin/bash",
-                },
-            )
+            overrides: dict[str, str] = {
+                "__EXECWRAP_ACTIVE": "1",
+                "SHELL": "/bin/bash",
+            }
+            if xdg_tmp is not None:
+                overrides["XDG_DATA_HOME"] = xdg_tmp
+
+            env = _build_env(self.config, overrides)
 
             sr = _run_with_idle_watchdog(
                 cmd,
@@ -993,6 +1030,8 @@ class OpenCodeBackend:
                 stdin_data=prompt.encode(),
                 use_setsid=True,
                 stream_output=self.config.stream_output,
+                idle_hang_seconds=self.config.idle_timeout_seconds or _IDLE_HANG_SECONDS,
+                cwd=self.config.cwd,
             )
 
             text = self._extract_text(sr.raw)
@@ -1012,10 +1051,11 @@ class OpenCodeBackend:
                 files_accessed=files,
             )
         finally:
-            # Clean up temp XDG dir
-            import shutil as _shutil
+            if xdg_tmp is not None:
+                # Clean up temp XDG dir
+                import shutil as _shutil
 
-            _shutil.rmtree(xdg_tmp, ignore_errors=True)
+                _shutil.rmtree(xdg_tmp, ignore_errors=True)
 
     @staticmethod
     def _extract_text(raw: bytes) -> str:
@@ -1365,13 +1405,418 @@ class MockBackend:
 
 
 # ---------------------------------------------------------------------------
+# ThinkingLoopBackend — multi-turn agentic loop with tool dispatch
+# ---------------------------------------------------------------------------
+
+_TLOOP_TOOL_PATTERN = re.compile(
+    r"\[(?P<tag>SEARCH_WEB|RUN_CODE|LOAD_DATA|SEARCH_COMPLETE):\s*(?P<args>[^\]]*)\]"
+    r"|"
+    r"\[(?P<wtag>WRITE_CODE|WRITE_TEST):\s*(?P<wname>[^\]]+)\]\n(?P<wbody>.*?)\n\[/(?P=wtag)\]",
+    re.DOTALL,
+)
+
+_TLOOP_PYPROJECT = """\
+[project]
+name = "analysis"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.26",
+    "pandas>=2.0",
+    "matplotlib>=3.8",
+    "seaborn>=0.13",
+    "scipy>=1.11",
+    "scikit-learn>=1.4",
+    "plotly>=5.18",
+    "statsmodels>=0.14",
+    "pytest>=8.0",
+    "kaleido>=0.2",
+]
+"""
+
+
+def _tloop_parse_tool_calls(text: str) -> list[dict[str, Any]]:
+    calls: list[dict[str, Any]] = []
+    for m in _TLOOP_TOOL_PATTERN.finditer(text):
+        if m.group("tag"):
+            calls.append({"type": m.group("tag"), "args": m.group("args").strip()})
+        elif m.group("wtag"):
+            calls.append(
+                {
+                    "type": m.group("wtag"),
+                    "name": m.group("wname").strip(),
+                    "body": m.group("wbody"),
+                }
+            )
+    return calls
+
+
+def _tloop_search_web(query: str) -> str:
+    try:
+        import httpx  # type: ignore
+    except ImportError:
+        return f"Search unavailable (httpx not installed): {query}"
+    try:
+        resp = httpx.get(
+            "https://api.duckduckgo.com/",
+            params={"q": query, "format": "json", "no_html": "1", "skip_disambig": "1"},
+            timeout=15,
+        )
+        data = resp.json()
+        parts = []
+        if data.get("AbstractText"):
+            parts.append(f"**Summary**: {data['AbstractText']}")
+        if data.get("AbstractURL"):
+            parts.append(f"**Source**: {data['AbstractURL']}")
+        for r in data.get("RelatedTopics", [])[:5]:
+            if isinstance(r, dict) and r.get("Text"):
+                parts.append(f"- {r['Text']}")
+        return "\n".join(parts) if parts else f"No result for: {query}"
+    except Exception as e:
+        return f"Search failed: {e}"
+
+
+def _tloop_write_code(filename: str, content: str, code_dir: Path) -> str:
+    code_dir.mkdir(parents=True, exist_ok=True)
+    (code_dir / filename).write_text(content)
+    return f"Written: {code_dir / filename} ({len(content)} bytes)"
+
+
+def _tloop_execute_code(
+    filename: str,
+    code_dir: Path,
+    timeout: int = 60,
+    use_docker: bool = False,
+    docker_image: str = "superpowerbi-sandbox:latest",
+    docker_network: str = "none",
+) -> str:
+    filepath = code_dir / filename
+    if not filepath.exists():
+        return f"ERROR: File not found: {filepath}"
+
+    pyproject = code_dir / "pyproject.toml"
+    if not pyproject.exists():
+        pyproject.write_text(_TLOOP_PYPROJECT)
+
+    if use_docker:
+        output_dir = code_dir / "docker_outputs"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        cmd = [
+            "docker",
+            "run",
+            "--rm",
+            "--network",
+            docker_network,
+            "--memory",
+            "2g",
+            "--cpus",
+            "2",
+            "--read-only",
+            "--tmpfs",
+            "/tmp:size=500m",
+            "-v",
+            f"{code_dir.resolve()}:/code:ro",
+            "-v",
+            f"{output_dir.resolve()}:/outputs:rw",
+            docker_image,
+            "uv",
+            "run",
+            f"/code/{filepath.name}",
+        ]
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout + 10)
+            return (
+                f"DOCKER EXIT {r.returncode}\n"
+                f"STDOUT:\n{r.stdout[:4000]}\n"
+                f"STDERR:\n{r.stderr[:2000]}"
+            )
+        except subprocess.TimeoutExpired:
+            return f"DOCKER TIMEOUT after {timeout}s"
+        except Exception as e:
+            return f"DOCKER ERROR: {e}"
+    else:
+        try:
+            r = subprocess.run(
+                ["uv", "run", "--project", str(code_dir), str(filepath)],
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                cwd=str(code_dir),
+            )
+            out = r.stdout[:4000] if r.stdout else ""
+            err = r.stderr[:2000] if r.stderr else ""
+            if r.returncode == 0:
+                return f"EXIT 0\nSTDOUT:\n{out}"
+            return f"EXIT {r.returncode}\nSTDOUT:\n{out}\nSTDERR:\n{err}"
+        except subprocess.TimeoutExpired:
+            return f"TIMEOUT after {timeout}s"
+        except FileNotFoundError:
+            return "ERROR: uv not found. Install: curl -LsSf https://astral.sh/uv/install.sh | sh"
+
+
+def _tloop_run_tests(code_dir: Path, timeout: int = 60) -> str:
+    try:
+        r = subprocess.run(
+            ["uv", "run", "--project", str(code_dir), "pytest", "-v", "--tb=short"],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            cwd=str(code_dir),
+        )
+        return f"PYTEST EXIT {r.returncode}\n{(r.stdout + r.stderr)[:5000]}"
+    except subprocess.TimeoutExpired:
+        return "PYTEST TIMEOUT"
+    except Exception as e:
+        return f"PYTEST ERROR: {e}"
+
+
+class ThinkingLoopBackendConfig(BackendConfig):
+    """
+    Configuration for the multi-turn ThinkingLoopBackend.
+
+    Parameters
+    ----------
+    system_prompt:
+        System prompt injected at the start of every loop conversation.
+    max_rounds:
+        Maximum number of LLM call→tool-dispatch iterations.
+    use_docker:
+        Run generated code inside a Docker sandbox (no network, read-only input).
+    docker_image:
+        Docker image tag for the sandbox.
+    docker_network:
+        Docker network mode (``"none"`` = no internet).
+    working_dir:
+        Directory where generated code files are written.  A temporary directory
+        is created (and later deleted) when ``None``.
+    on_progress:
+        Optional callback invoked at key loop events.  Receives an event name
+        and a data dict.  Events:
+
+        ``"round_start"``   — ``{"round": int}``
+        ``"model_output"``  — ``{"round": int, "text": str}``
+        ``"tool_call"``     — ``{"type": str, "args": str}`` or
+                              ``{"type": str, "name": str}`` for write calls
+        ``"complete"``      — ``{"reason": "analysis_complete"|"no_tools"|"max_rounds"}``
+    """
+
+    def __init__(
+        self,
+        *,
+        system_prompt: str = "",
+        max_rounds: int = 12,
+        use_docker: bool = False,
+        docker_image: str = "superpowerbi-sandbox:latest",
+        docker_network: str = "none",
+        working_dir: Path | str | None = None,
+        on_progress: Any | None = None,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(type=Backend.THINKING_LOOP, **kwargs)
+        self.system_prompt = system_prompt
+        self.max_rounds = max_rounds
+        self.use_docker = use_docker
+        self.docker_image = docker_image
+        self.docker_network = docker_network
+        self.working_dir: Path | None = Path(working_dir) if working_dir else None
+        self.on_progress = on_progress  # Callable[[str, dict], None] | None
+
+
+class ThinkingLoopBackend:
+    """
+    Multi-turn agentic loop backend (Anthropic SDK).
+
+    Runs a tool-call parse-and-dispatch loop:
+      1. Send the initial prompt to Claude.
+      2. Parse ``[TOOL_NAME: …]`` tags from the response.
+      3. Execute tools: web search, code write/run.
+      4. Feed results back and repeat until ``[ANALYSIS_COMPLETE]``
+         or ``max_rounds`` is reached.
+
+    The ``run()`` call blocks until the loop finishes and returns a single
+    ``SubagentResult`` whose ``text`` field contains the final model output.
+
+    Requires the ``anthropic`` package (``pip install anthropic``).
+    """
+
+    def __init__(self, config: BackendConfig) -> None:
+        if not isinstance(config, ThinkingLoopBackendConfig):
+            raise TypeError(
+                "ThinkingLoopBackend requires ThinkingLoopBackendConfig, "
+                f"got {type(config).__name__}"
+            )
+        self.config: ThinkingLoopBackendConfig = config  # type: ignore[assignment]
+
+        # Resolve API key: env_overrides take priority over api_key_source lookup.
+        api_key = ""
+        if config.api_key_source:
+            api_key = os.environ.get(config.api_key_source, "")
+        api_key = config.env_overrides.get("ANTHROPIC_API_KEY", api_key) or api_key
+        self._api_key = api_key
+
+    def run(
+        self,
+        prompt: str,
+        model: str,
+        timeout: int,
+        *,
+        tools: list[str] | None = None,
+    ) -> SubagentResult:
+        import time
+
+        start = time.monotonic()
+        own_dir = False
+        working_dir = self.config.working_dir
+
+        if working_dir is None:
+            working_dir = Path(tempfile.mkdtemp(prefix="tloop_"))
+            own_dir = True
+
+        code_dir = working_dir / "code"
+        code_dir.mkdir(parents=True, exist_ok=True)
+
+        try:
+            text, files = self._run_loop(prompt, model, code_dir)
+            return SubagentResult(
+                text=text,
+                exit_code=0,
+                duration_seconds=time.monotonic() - start,
+                model_used=model,
+                backend_used=Backend.THINKING_LOOP,
+                files_accessed=files,
+            )
+        except Exception as e:
+            return SubagentResult(
+                text="",
+                exit_code=1,
+                duration_seconds=time.monotonic() - start,
+                model_used=model,
+                backend_used=Backend.THINKING_LOOP,
+                error=str(e),
+            )
+        finally:
+            if own_dir and working_dir is not None:
+                import shutil as _shu
+
+                _shu.rmtree(working_dir, ignore_errors=True)
+
+    def _run_loop(
+        self,
+        prompt: str,
+        model: str,
+        code_dir: Path,
+    ) -> tuple[str, list[str]]:
+        try:
+            import anthropic  # type: ignore
+        except ImportError as exc:
+            raise RuntimeError(
+                "anthropic package required for ThinkingLoopBackend: pip install anthropic"
+            ) from exc
+
+        client = anthropic.Anthropic(api_key=self._api_key)
+        messages: list[dict[str, str]] = [{"role": "user", "content": prompt}]
+        files_accessed: list[str] = []
+        final_text = ""
+        emit = self.config.on_progress  # Callable[[str, dict], None] | None
+
+        for round_num in range(self.config.max_rounds):
+            if emit:
+                emit("round_start", {"round": round_num})
+
+            response = client.messages.create(
+                model=model,
+                max_tokens=8192,
+                system=self.config.system_prompt,
+                messages=messages,
+            )
+            assistant_text = response.content[0].text
+            messages.append({"role": "assistant", "content": assistant_text})
+            final_text = assistant_text
+
+            if emit:
+                emit("model_output", {"round": round_num, "text": assistant_text})
+
+            if "[ANALYSIS_COMPLETE]" in assistant_text:
+                if emit:
+                    emit("complete", {"reason": "analysis_complete"})
+                break
+
+            tool_calls = _tloop_parse_tool_calls(assistant_text)
+            if not tool_calls:
+                if emit:
+                    emit("complete", {"reason": "no_tools"})
+                break
+
+            results: list[str] = []
+            for call in tool_calls:
+                ctype = call["type"]
+                if ctype == "SEARCH_WEB":
+                    if emit:
+                        emit("tool_call", {"type": ctype, "args": call["args"]})
+                    r = _tloop_search_web(call["args"])
+                    results.append(f"[SEARCH_RESULT: {call['args']}]\n{r}\n[/SEARCH_RESULT]")
+                elif ctype in ("WRITE_CODE", "WRITE_TEST"):
+                    if emit:
+                        emit("tool_call", {"type": ctype, "name": call["name"]})
+                    r = _tloop_write_code(call["name"], call["body"], code_dir)
+                    files_accessed.append(str(code_dir / call["name"]))
+                    results.append(f"[WRITE_RESULT: {call['name']}]\n{r}\n[/WRITE_RESULT]")
+                elif ctype == "RUN_CODE":
+                    fname = call["args"]
+                    if emit:
+                        emit("tool_call", {"type": ctype, "args": fname})
+                    test_file = code_dir / f"test_{fname}"
+                    if test_file.exists():
+                        tr = _tloop_run_tests(code_dir)
+                        results.append(f"[TEST_RESULT: test_{fname}]\n{tr}\n[/TEST_RESULT]")
+                    r = _tloop_execute_code(
+                        fname,
+                        code_dir,
+                        use_docker=self.config.use_docker,
+                        docker_image=self.config.docker_image,
+                        docker_network=self.config.docker_network,
+                    )
+                    results.append(f"[EXEC_RESULT: {fname}]\n{r}\n[/EXEC_RESULT]")
+                elif ctype == "LOAD_DATA":
+                    if emit:
+                        emit("tool_call", {"type": ctype, "args": call["args"]})
+                    results.append(
+                        f"[DATA_INFO: {call['args']}]\n"
+                        f"Dataset at {call['args']} — reference this path in your code.\n"
+                        f"[/DATA_INFO]"
+                    )
+                elif ctype == "SEARCH_COMPLETE":
+                    if emit:
+                        emit("tool_call", {"type": ctype, "args": ""})
+                    results.append(
+                        "[SEARCH_COMPLETE_ACK]\nSearch phase complete.\n[/SEARCH_COMPLETE_ACK]"
+                    )
+
+            if results:
+                messages.append({"role": "user", "content": "\n\n".join(results)})
+        else:
+            # Exhausted max_rounds without break
+            if emit:
+                emit("complete", {"reason": "max_rounds"})
+
+        return final_text, files_accessed
+
+
+# ---------------------------------------------------------------------------
 # Factory
 # ---------------------------------------------------------------------------
 
 
 def create_backend(
     config: BackendConfig,
-) -> ClaudeBackend | OpenCodeBackend | OpenRouterBackend | DirectAPIBackend | MockBackend:
+) -> (
+    ClaudeBackend
+    | OpenCodeBackend
+    | OpenRouterBackend
+    | DirectAPIBackend
+    | MockBackend
+    | ThinkingLoopBackend
+):
     """Instantiate the correct backend class from a BackendConfig."""
     mapping = {
         Backend.CLAUDE: ClaudeBackend,
@@ -1379,6 +1824,7 @@ def create_backend(
         Backend.OPENROUTER: OpenRouterBackend,
         Backend.DIRECT_API: DirectAPIBackend,
         Backend.MOCK: MockBackend,
+        Backend.THINKING_LOOP: ThinkingLoopBackend,
     }
     cls = mapping.get(config.type)
     if cls is None:

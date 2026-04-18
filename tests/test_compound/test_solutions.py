@@ -5,8 +5,6 @@ from __future__ import annotations
 from datetime import date
 from pathlib import Path
 
-import pytest
-
 from langywrap.compound.solutions import Solution, SolutionStore, _slugify
 
 
@@ -81,13 +79,40 @@ class TestSolutionStore:
         assert len(store.search(tags=["x"])) == 1
 
     def test_template_created(self, tmp_path: Path) -> None:
-        store = SolutionStore(tmp_path / "solutions")
+        SolutionStore(tmp_path / "solutions")
         assert (tmp_path / "solutions" / "_template.md").exists()
 
     def test_empty_store(self, tmp_path: Path) -> None:
         store = SolutionStore(tmp_path / "solutions")
         assert store.count() == 0
         assert store.all_solutions() == []
+
+    def test_skips_malformed_file(self, tmp_path: Path) -> None:
+        """Covers the except/continue branch in all_solutions (lines 107-108)."""
+        store = SolutionStore(tmp_path / "solutions")
+        # Write a file that will cause Solution.from_file to raise
+        bad = store.solutions_dir / "bad_file.md"
+        bad.write_text("\x00\x01\x02 binary garbage \xff\xfe")
+
+        # Monkeypatch Solution.from_file to always raise for this file
+        import langywrap.compound.solutions as sol_mod
+        original = sol_mod.Solution.from_file
+
+        def patched(f):
+            if f.name == "bad_file.md":
+                raise ValueError("intentionally bad")
+            return original(f)
+
+        sol_mod.Solution.from_file = staticmethod(patched)  # type: ignore[attr-defined]
+        try:
+            # Add a valid solution too
+            store.add(Solution(title="Good", date=date.today(), tags=["ok"]))
+            results = store.all_solutions()
+            # bad_file.md should be silently skipped; good solution present
+            titles = [r.title for r in results]
+            assert all("bad" not in t.lower() for t in titles)
+        finally:
+            sol_mod.Solution.from_file = staticmethod(original)  # type: ignore[attr-defined]
 
 
 class TestSlugify:

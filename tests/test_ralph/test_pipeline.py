@@ -5,7 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-
 from langywrap.ralph.pipeline import (
     Gate,
     Loop,
@@ -19,7 +18,6 @@ from langywrap.ralph.pipeline import (
     _resolve_model,
     load_pipeline_config,
 )
-
 
 # ---------------------------------------------------------------------------
 # Model aliases

@@ -1,9 +1,9 @@
 [project]
 name = "langywrap"
-version = "0.1.0"
+version = "0.1.5"
 description = "Universal AI agent orchestration toolkit — execution security, ralph loops, hyperagents, compound engineering"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 license = { text = "MIT" }
 dependencies = [
     "pyyaml",
@@ -17,12 +17,27 @@ data = [
     "duckdb",
     "polars",
 ]
+thinking-loop = [
+    "anthropic>=0.40.0",
+    "httpx>=0.27.0",
+]
+# Vendored submodule tools — editable installs resolved via [tool.uv.sources].
+# Install via: ./just install-textify / ./just install-graphify, or:
+#   uv sync --extra knowledge-graph
+knowledge-graph = [
+    "textify[full]",
+    "graphifyy",
+]
 dev = [
     "pytest",
     "ruff",
     "mypy",
     "pytest-xdist",
 ]
+
+[tool.uv.sources]
+textify = { path = "textify", editable = true }
+graphifyy = { path = "graphify", editable = true }
 
 [project.scripts]
 langywrap = "langywrap.cli:main"

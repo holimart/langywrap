@@ -15,15 +15,13 @@ binary so they run without network access or API keys.
 
 from __future__ import annotations
 
-import os
+import json
 import stat
 import textwrap
 from pathlib import Path
 
 import pytest
-
-from langywrap.router.backends import BackendConfig, Backend, OpenCodeBackend
-
+from langywrap.router.backends import Backend, BackendConfig, OpenCodeBackend
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -38,13 +36,15 @@ def cat_shim(tmp_path: Path) -> str:
     exactly like the real opencode ``--format json`` output.
     """
     shim = tmp_path / "opencode"
-    shim.write_text(textwrap.dedent("""\
+    shim.write_text(
+        textwrap.dedent("""\
         #!/usr/bin/env bash
         # Ignore all flags (--model, --format, etc.) — just read stdin.
         prompt=$(cat)
         # Emit a single JSON text event with the prompt as content.
         printf '{"type":"text","text":"%s"}\\n' "$prompt"
-    """))
+    """)
+    )
     shim.chmod(shim.stat().st_mode | stat.S_IEXEC)
     return str(shim)
 
@@ -119,14 +119,16 @@ class TestPromptDeliveryViaStdin:
         """
         log_file = tmp_path / "args.log"
         spy_shim = tmp_path / "opencode_spy"
-        spy_shim.write_text(textwrap.dedent(f"""\
+        spy_shim.write_text(
+            textwrap.dedent(f"""\
             #!/usr/bin/env bash
             # Log all positional args to a file
             printf '%s\\n' "$@" > {log_file}
             # Still consume stdin and emit JSON so the backend is happy
             prompt=$(cat)
             printf '{{"type":"text","text":"ok"}}\\n'
-        """))
+        """)
+        )
         spy_shim.chmod(spy_shim.stat().st_mode | stat.S_IEXEC)
 
         config = BackendConfig(
@@ -158,7 +160,9 @@ class TestExtractText:
         assert OpenCodeBackend._extract_text(raw) == "Hello from model"
 
     def test_assistant_message_event(self) -> None:
-        raw = b'{"type":"assistant","message":{"content":[{"type":"text","text":"Response here"}]}}\n'
+        raw = (
+            b'{"type":"assistant","message":{"content":[{"type":"text","text":"Response here"}]}}\n'
+        )
         assert OpenCodeBackend._extract_text(raw) == "Response here"
 
     def test_multiple_events_concatenated(self) -> None:
@@ -176,3 +180,131 @@ class TestExtractText:
 
     def test_empty_input(self) -> None:
         assert OpenCodeBackend._extract_text(b"") == ""
+
+
+class TestProjectMcpConfig:
+    def test_opencode_syncs_langywrap_mcp_and_runtime_can_launch_server(
+        self, tmp_path: Path
+    ) -> None:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / ".langywrap").mkdir()
+
+        server_script = repo / "mcp_server.py"
+        server_script.write_text(
+            "#!/usr/bin/env python3\n"
+            "import json\n"
+            "import sys\n\n"
+            "def send(obj):\n"
+            "    sys.stdout.write(json.dumps(obj) + '\\n')\n"
+            "    sys.stdout.flush()\n\n"
+            "while True:\n"
+            "    line = sys.stdin.readline()\n"
+            "    if not line:\n"
+            "        break\n"
+            "    req = json.loads(line)\n"
+            "    method = req.get('method')\n"
+            "    if method == 'initialize':\n"
+            "        send({'jsonrpc': '2.0', 'id': req['id'], 'result': {'protocolVersion': req['params']['protocolVersion'], 'capabilities': {'tools': {'listChanged': False}}, 'serverInfo': {'name': 'dummy', 'version': '1.0'}}})\n"
+            "    elif method == 'tools/list':\n"
+            "        send({'jsonrpc': '2.0', 'id': req['id'], 'result': {'tools': [{'name': 'dummy_lookup', 'description': 'Dummy MCP tool', 'inputSchema': {'type': 'object', 'properties': {}}}]}})\n"
+            "    elif method == 'notifications/initialized':\n"
+            "        continue\n"
+            "    else:\n"
+            "        send({'jsonrpc': '2.0', 'id': req.get('id'), 'result': {}})\n",
+            encoding="utf-8",
+        )
+        server_script.chmod(server_script.stat().st_mode | stat.S_IEXEC)
+
+        manifest = repo / ".langywrap" / "mcp.json"
+        manifest.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "lawy": {
+                            "command": "python3",
+                            "args": [str(server_script)],
+                        }
+                    }
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        shim = repo / "opencode"
+        shim.write_text(
+            textwrap.dedent(
+                """\
+                #!/usr/bin/env python3
+                import json
+                import os
+                import pathlib
+                import subprocess
+                import sys
+
+                repo = pathlib.Path.cwd()
+                cfg = json.loads((repo / "opencode.json").read_text(encoding="utf-8"))
+                srv = cfg["mcp"]["lawy"]
+                env = os.environ.copy()
+                env.update(srv.get("environment", {}))
+                proc = subprocess.Popen(
+                    srv["command"],
+                    cwd=str(repo),
+                    env=env,
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    text=True,
+                )
+                proc.stdin.write(json.dumps({
+                    "jsonrpc": "2.0",
+                    "id": 0,
+                    "method": "initialize",
+                    "params": {
+                        "protocolVersion": "2025-11-25",
+                        "capabilities": {},
+                        "clientInfo": {"name": "opencode", "version": "1.3.17"},
+                    },
+                }) + "\\n")
+                proc.stdin.flush()
+                init = json.loads(proc.stdout.readline())
+                proc.stdin.write(json.dumps({
+                    "jsonrpc": "2.0",
+                    "method": "notifications/initialized",
+                    "params": {},
+                }) + "\\n")
+                proc.stdin.write(json.dumps({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/list",
+                    "params": {},
+                }) + "\\n")
+                proc.stdin.flush()
+                tools = json.loads(proc.stdout.readline())
+                proc.terminate()
+                proc.wait(timeout=5)
+                text = "mcp=" + init["result"]["serverInfo"]["name"] + "/" + tools["result"]["tools"][0]["name"]
+                print(json.dumps({"type": "text", "text": text}))
+                """
+            ),
+            encoding="utf-8",
+        )
+        shim.chmod(shim.stat().st_mode | stat.S_IEXEC)
+
+        config = BackendConfig(
+            type=Backend.OPENCODE,
+            binary_path=str(shim),
+            timeout_seconds=10,
+            cwd=str(repo),
+            opencode_isolate_xdg=False,
+        )
+        backend = OpenCodeBackend(config)
+
+        result = backend.run("hello", "test-model", timeout=10)
+
+        assert result.ok
+        assert result.text == "mcp=dummy/dummy_lookup"
+        synced = json.loads((repo / "opencode.json").read_text(encoding="utf-8"))
+        assert synced["mcp"]["lawy"]["type"] == "local"
+        assert synced["mcp"]["lawy"]["command"][0] == "python3"

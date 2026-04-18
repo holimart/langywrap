@@ -13,10 +13,8 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-
-from langywrap.router.backends import Backend, BackendConfig, MockBackend, SubagentResult
-from langywrap.security.engine import PermissionDecision, SecurityEngine
-
+from langywrap.router.backends import Backend, BackendConfig, MockBackend
+from langywrap.security.engine import SecurityEngine
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -109,7 +107,9 @@ class TestMockBackendBasic:
 class TestSecurityThroughMock:
     """Verify dangerous commands are blocked by SecurityEngine before execution."""
 
-    def test_rm_rf_blocked(self, mock_backend: MockBackend, security_engine: SecurityEngine) -> None:
+    def test_rm_rf_blocked(
+        self, mock_backend: MockBackend, security_engine: SecurityEngine
+    ) -> None:
         result = mock_backend.run_with_security_check(
             "rm -rf /",
             security_engine=security_engine,
@@ -117,7 +117,9 @@ class TestSecurityThroughMock:
         assert result.exit_code == 2
         assert "BLOCKED" in result.error
 
-    def test_sudo_blocked(self, mock_backend: MockBackend, security_engine: SecurityEngine) -> None:
+    def test_sudo_blocked(
+        self, mock_backend: MockBackend, security_engine: SecurityEngine
+    ) -> None:
         result = mock_backend.run_with_security_check(
             "sudo apt install evil-package",
             security_engine=security_engine,
@@ -125,7 +127,9 @@ class TestSecurityThroughMock:
         assert result.exit_code == 2
         assert "BLOCKED" in result.error
 
-    def test_chmod_777_blocked(self, mock_backend: MockBackend, security_engine: SecurityEngine) -> None:
+    def test_chmod_777_blocked(
+        self, mock_backend: MockBackend, security_engine: SecurityEngine
+    ) -> None:
         result = mock_backend.run_with_security_check(
             "chmod 777 /etc/passwd",
             security_engine=security_engine,
@@ -133,7 +137,9 @@ class TestSecurityThroughMock:
         assert result.exit_code == 2
         assert "BLOCKED" in result.error
 
-    def test_dd_blocked(self, mock_backend: MockBackend, security_engine: SecurityEngine) -> None:
+    def test_dd_blocked(
+        self, mock_backend: MockBackend, security_engine: SecurityEngine
+    ) -> None:
         result = mock_backend.run_with_security_check(
             "dd if=/dev/zero of=/dev/sda",
             security_engine=security_engine,
@@ -141,7 +147,9 @@ class TestSecurityThroughMock:
         assert result.exit_code == 2
         assert "BLOCKED" in result.error
 
-    def test_safe_echo_allowed(self, mock_backend: MockBackend, security_engine: SecurityEngine) -> None:
+    def test_safe_echo_allowed(
+        self, mock_backend: MockBackend, security_engine: SecurityEngine
+    ) -> None:
         result = mock_backend.run_with_security_check(
             "echo hello world",
             security_engine=security_engine,
@@ -149,14 +157,18 @@ class TestSecurityThroughMock:
         assert result.ok
         assert "hello world" in result.text
 
-    def test_safe_ls_allowed(self, mock_backend: MockBackend, security_engine: SecurityEngine) -> None:
+    def test_safe_ls_allowed(
+        self, mock_backend: MockBackend, security_engine: SecurityEngine
+    ) -> None:
         result = mock_backend.run_with_security_check(
             "ls -la /tmp",
             security_engine=security_engine,
         )
         assert result.ok
 
-    def test_safe_cat_allowed(self, mock_backend: MockBackend, security_engine: SecurityEngine) -> None:
+    def test_safe_cat_allowed(
+        self, mock_backend: MockBackend, security_engine: SecurityEngine
+    ) -> None:
         result = mock_backend.run_with_security_check(
             "cat /etc/hostname",
             security_engine=security_engine,
@@ -164,7 +176,9 @@ class TestSecurityThroughMock:
         # May or may not have hostname file, but should not be blocked
         assert result.exit_code != 2  # Not security-blocked
 
-    def test_git_force_push_blocked_or_ask(self, mock_backend: MockBackend, security_engine: SecurityEngine) -> None:
+    def test_git_force_push_blocked_or_ask(
+        self, mock_backend: MockBackend, security_engine: SecurityEngine
+    ) -> None:
         """Force push should at minimum require confirmation (ASK or DENY)."""
         result = mock_backend.run_with_security_check(
             "git push --force origin main",
@@ -173,7 +187,9 @@ class TestSecurityThroughMock:
         # Should be blocked (exit 2) or at least not freely executed
         assert result.exit_code == 2 or "BLOCKED" in result.error or result.exit_code != 0
 
-    def test_dd_device_write_blocked(self, mock_backend: MockBackend, security_engine: SecurityEngine) -> None:
+    def test_dd_device_write_blocked(
+        self, mock_backend: MockBackend, security_engine: SecurityEngine
+    ) -> None:
         """dd with if= is in the deny list (pattern: dd:if=)."""
         result = mock_backend.run_with_security_check(
             "dd if=/dev/zero of=/dev/sda bs=1M",
@@ -282,7 +298,7 @@ class TestMockInRouter:
     """Verify MockBackend works as a drop-in backend in ExecutionRouter."""
 
     def test_router_with_mock_backend(self, tmp_path: Path) -> None:
-        from langywrap.router.config import DEFAULT_ROUTE_CONFIG, RouteConfig, RouteRule, StepRole
+        from langywrap.router.config import RouteConfig, RouteRule, StepRole
         from langywrap.router.router import ExecutionRouter
 
         # Create a config that routes everything through mock
@@ -325,7 +341,9 @@ class TestMockInRouter:
         config = RouteConfig(
             name="stats-test",
             rules=[
-                RouteRule(role=StepRole.ORIENT, model="mock-v1", backend=Backend.MOCK, timeout_minutes=1),
+                RouteRule(
+                    role=StepRole.ORIENT, model="mock-v1", backend=Backend.MOCK, timeout_minutes=1
+                ),
             ],
         )
         backends = {
@@ -350,8 +368,12 @@ class TestMockInRouter:
         config = RouteConfig(
             name="dry-test",
             rules=[
-                RouteRule(role=StepRole.ORIENT, model="mock-v1", backend=Backend.MOCK, timeout_minutes=1),
-                RouteRule(role=StepRole.EXECUTE, model="mock-v2", backend=Backend.MOCK, timeout_minutes=1),
+                RouteRule(
+                    role=StepRole.ORIENT, model="mock-v1", backend=Backend.MOCK, timeout_minutes=1
+                ),
+                RouteRule(
+                    role=StepRole.EXECUTE, model="mock-v2", backend=Backend.MOCK, timeout_minutes=1
+                ),
             ],
         )
         backends = {

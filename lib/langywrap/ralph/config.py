@@ -127,6 +127,20 @@ class StepConfig(BaseModel):
     """If > 0, this step only runs every Nth cycle. E.g. every_n=10 means
     run on cycles 10, 20, 30, etc. 0 = run every cycle."""
 
+    enrich: list[str] = Field(default_factory=list)
+    """External context sources to inject into this step's prompt.
+
+    Each name is resolved against ``ralph.context.ENRICHERS`` and the result
+    is appended as a dedicated section after the orient context. Unknown
+    names and missing source files are silently skipped.
+
+    Built-in:
+        'graphify' — reads graphify-out/GRAPH_REPORT.md (capped at 20KB).
+
+    Only opt in on steps where structural context pays off — typically
+    ``orient`` (planning) and ``critic`` (impact review). Execute-phase
+    enrichment is usually wasted tokens (grep+read beats graphs there)."""
+
 
 # ---------------------------------------------------------------------------
 # QualityGateConfig
@@ -210,6 +224,22 @@ class RalphConfig(BaseModel):
 
     git_add_paths: list[str] = Field(default_factory=list)
     """Explicit paths to stage before committing (empty → no git add, only already-staged)."""
+
+    post_cycle_commands: list[str] = Field(default_factory=list)
+    """Shell commands executed at the end of every cycle, after quality gates
+    and before git commit. Fires regardless of whether the cycle committed —
+    useful for refreshing external indices (e.g. ``textify docs docs-txt``,
+    ``graphify --update``) so the updated artifact lands in the same commit.
+
+    Each command runs sequentially. A non-zero exit is logged as a warning
+    and does NOT fail the cycle — these are advisory maintenance tasks.
+    Commands are run in ``project_dir`` with a per-command wall-clock timeout
+    of ``post_cycle_command_timeout`` seconds."""
+
+    post_cycle_command_timeout: int = 120
+    """Per-command timeout (seconds) for ``post_cycle_commands``. A hung
+    indexer should not stall the cycle — the command is killed and the next
+    one runs."""
 
     scope_restriction: str = ""
     """Text injected into every prompt header as a CRITICAL SCOPE RESTRICTION."""

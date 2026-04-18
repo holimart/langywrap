@@ -26,8 +26,8 @@ Usage::
 
 from __future__ import annotations
 
+import contextlib
 import threading
-import time
 from datetime import datetime
 from pathlib import Path
 
@@ -82,10 +82,8 @@ class StepLogger:
         for line in msg.splitlines() or [""]:
             out = f"[{ts}] [{self.TAG}] {line}"
             print(out)
-            try:
+            with contextlib.suppress(OSError):  # disk full — don't crash the loop
                 self._master_fh.write(out + "\n")
-            except OSError:
-                pass  # disk full — don't crash the loop
 
     # ------------------------------------------------------------------
     # Per-step log lifecycle
@@ -164,10 +162,8 @@ class StepLogger:
 
         # Write full AI output to per-step log
         if self._current_step_log is not None and output:
-            try:
+            with contextlib.suppress(OSError):
                 self._current_step_log.write_text(output, encoding="utf-8")
-            except OSError:
-                pass
 
         size_b = len(output.encode("utf-8"))
         dur_str = f" in {duration:.1f}s" if duration > 0 else ""
@@ -187,10 +183,8 @@ class StepLogger:
     def close(self) -> None:
         """Stop any running heartbeat and close the master log file handle."""
         self.stop_heartbeat()
-        try:
+        with contextlib.suppress(OSError):
             self._master_fh.close()
-        except OSError:
-            pass
 
     # ------------------------------------------------------------------
     # Internal

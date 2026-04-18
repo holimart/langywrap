@@ -4,10 +4,8 @@ from __future__ import annotations
 
 import textwrap
 from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 import pytest
-
 from langywrap.ralph.module import (
     BoundStep,
     Module,
@@ -19,7 +17,6 @@ from langywrap.ralph.module import (
     match,
     step,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -177,7 +174,7 @@ class TestBoundStep:
         m.state = "state"
         m.verbose = False
 
-        runner = ModuleRunner(m, project_dir=tmp_path, router=None)
+        ModuleRunner(m, project_dir=tmp_path, router=None)
         m._cycle_num = 1
         m._orient_context = ""
 
@@ -189,7 +186,7 @@ class TestBoundStep:
         """Disabled step is skipped."""
         m = SimplePipeline()
         m.verbose = False
-        runner = ModuleRunner(m, project_dir=tmp_path, router=None)
+        ModuleRunner(m, project_dir=tmp_path, router=None)
 
         # Disable execute
         m.apply_overrides({"execute.enabled": False})
@@ -210,7 +207,7 @@ class TestMatch:
     def test_matching(self, prompts_dir, state_dir, tmp_path):
         m = SimplePipeline()
         m.verbose = False
-        runner = ModuleRunner(m, project_dir=tmp_path, router=None)
+        ModuleRunner(m, project_dir=tmp_path, router=None)
         m._cycle_num = 1
         m._orient_context = ""
 
@@ -569,7 +566,7 @@ class TestInnerLoop:
             review = step("sonnet", "review.md")
 
             def forward(self, cycle: int):
-                for attempt in range(3):
+                for _attempt in range(3):
                     self.engineer()
                     self.review()
                     if "LGTM" in self.review.output:
@@ -601,7 +598,7 @@ class TestInnerLoop:
 
             def forward(self, cycle: int):
                 models = ["kimi", "kimi", "sonnet", "opus"]
-                for attempt, model in enumerate(models):
+                for _attempt, model in enumerate(models):
                     self.engineer(model=model)
                     # Track which model was used (for test assertion)
                     type(self)._models_used.append(model)
