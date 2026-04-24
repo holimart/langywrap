@@ -122,147 +122,40 @@ class TestRalphContext:
 
 
 # ---------------------------------------------------------------------------
-# router/config.py
+# router/router.py (replaces the old router/config.py tests — RouteConfig
+# and RouteRule were removed; routing lives on Step objects now).
 # ---------------------------------------------------------------------------
 
 
-class TestRouteConfig:
-    def test_parse_peak_hours_none(self):
-        from langywrap.router.config import _parse_peak_hours
-        assert _parse_peak_hours(None) is None
+class TestExecutionRouterBasics:
+    def test_execute_routes_to_explicit_engine(self):
+        from langywrap.router.backends import Backend, BackendConfig
+        from langywrap.router.router import ExecutionRouter
 
-    def test_parse_peak_hours_list(self):
-        from langywrap.router.config import _parse_peak_hours
-        assert _parse_peak_hours([13, 19]) == (13, 19)
-
-    def test_parse_peak_hours_invalid_raises(self):
-        from langywrap.router.config import _parse_peak_hours
-        with pytest.raises(ValueError):
-            _parse_peak_hours("bad")
-
-    def test_parse_rule_basic(self):
-        from langywrap.router.config import _parse_rule
-        rule = _parse_rule({
-            "role": "orient",
-            "model": "claude-haiku",
-            "backend": "claude",
-        })
-        assert rule.model == "claude-haiku"
-
-    def test_parse_rule_bad_role_raises(self):
-        from langywrap.router.config import _parse_rule
-        with pytest.raises(ValueError, match="Unknown step role"):
-            _parse_rule({"role": "nonexistent_role", "model": "x", "backend": "claude"})
-
-    def test_parse_rule_bad_backend_raises(self):
-        from langywrap.router.config import _parse_rule
-        with pytest.raises(ValueError, match="Unknown backend"):
-            _parse_rule({"role": "orient", "model": "x", "backend": "bad_backend"})
-
-    def test_parse_rule_bad_tier_defaults_to_mid(self):
-        from langywrap.router.config import ModelTier, _parse_rule
-        rule = _parse_rule(
-            {"role": "orient", "model": "x", "backend": "claude", "tier": "superexpensive"}
+        backends = {Backend.MOCK: BackendConfig(type=Backend.MOCK)}
+        router = ExecutionRouter(backends=backends, default_backend=Backend.MOCK)
+        result = router.execute(
+            prompt="hi", model="mock-x", engine="auto", timeout_minutes=1, tag="orient"
         )
-        assert rule.tier == ModelTier.MID
+        assert result.ok
 
-    def test_load_route_config_defaults_when_no_file(self, tmp_path):
-        from langywrap.router.config import load_route_config
-        cfg = load_route_config(tmp_path)
-        # Should return DEFAULT_ROUTE_CONFIG
-        assert cfg is not None
-        assert len(cfg.rules) > 0
+    def test_execute_unknown_engine_falls_back_to_model_inference(self):
+        from langywrap.router.backends import Backend, BackendConfig
+        from langywrap.router.router import ExecutionRouter
 
-    def test_load_route_config_from_yaml(self, tmp_path):
-        from langywrap.router.config import load_route_config
-        yaml_content = """
-name: test-config
-rules:
-  - role: orient
-    model: claude-haiku-test
-    backend: claude
-    timeout_minutes: 10
-"""
-        langywrap_dir = tmp_path / ".langywrap"
-        langywrap_dir.mkdir()
-        (langywrap_dir / "router.yaml").write_text(yaml_content)
-        cfg = load_route_config(tmp_path)
-        assert cfg.name == "test-config"
-        assert len(cfg.rules) == 1
-        assert cfg.rules[0].model == "claude-haiku-test"
-
-    def test_route_config_get_rule_unconditional(self):
-        from langywrap.router.config import Backend, RouteConfig, RouteRule, StepRole
-        rc = RouteConfig(
-            rules=[
-                RouteRule(role=StepRole.ORIENT, model="haiku", backend=Backend.CLAUDE),
-                RouteRule(role=StepRole.EXECUTE, model="kimi", backend=Backend.OPENROUTER),
-            ]
+        backends = {Backend.MOCK: BackendConfig(type=Backend.MOCK)}
+        router = ExecutionRouter(backends=backends, default_backend=Backend.MOCK)
+        # Unknown engine → warning + use _infer_backend_from_model, which for
+        # an unknown (non-claude) model returns OPENCODE. That's not configured,
+        # so execute falls back to default_backend (MOCK).
+        result = router.execute(
+            prompt="hi",
+            model="mock-unknown",
+            engine="not-a-real-engine",
+            timeout_minutes=1,
+            tag="execute",
         )
-        rule = rc.get_rule(StepRole.ORIENT)
-        assert rule is not None
-        assert rule.model == "haiku"
-
-    def test_route_config_get_rule_conditional_wins(self):
-        from langywrap.router.config import Backend, RouteConfig, RouteRule, StepRole
-        rc = RouteConfig(
-            rules=[
-                RouteRule(
-                    role=StepRole.EXECUTE,
-                    model="kimi",
-                    backend=Backend.OPENROUTER,
-                ),
-                RouteRule(
-                    role=StepRole.EXECUTE,
-                    model="sonnet",
-                    backend=Backend.CLAUDE,
-                    conditions={"cycle_type": "lean"},
-                ),
-            ]
-        )
-        rule = rc.get_rule(StepRole.EXECUTE, context={"cycle_type": "lean"})
-        assert rule is not None
-        assert rule.model == "sonnet"
-
-    def test_route_config_get_rule_no_match_returns_none(self):
-        from langywrap.router.config import Backend, RouteConfig, RouteRule, StepRole
-        rc = RouteConfig(
-            rules=[
-                RouteRule(role=StepRole.ORIENT, model="haiku", backend=Backend.CLAUDE),
-            ]
-        )
-        rule = rc.get_rule(StepRole.EXECUTE)
-        assert rule is None
-
-    def test_route_rule_matches_conditions_all_match(self):
-        from langywrap.router.config import Backend, RouteRule, StepRole
-        rule = RouteRule(
-            role=StepRole.EXECUTE,
-            model="kimi",
-            backend=Backend.OPENROUTER,
-            conditions={"cycle_type": "lean", "task": "fix"},
-        )
-        assert rule.matches_conditions({"cycle_type": "lean", "task": "fix"}) is True
-
-    def test_route_rule_matches_conditions_partial_fails(self):
-        from langywrap.router.config import Backend, RouteRule, StepRole
-        rule = RouteRule(
-            role=StepRole.EXECUTE,
-            model="kimi",
-            backend=Backend.OPENROUTER,
-            conditions={"cycle_type": "lean"},
-        )
-        assert rule.matches_conditions({"cycle_type": "research"}) is False
-
-    def test_route_rule_timeout_seconds_property(self):
-        from langywrap.router.config import Backend, RouteRule, StepRole
-        rule = RouteRule(
-            role=StepRole.ORIENT,
-            model="haiku",
-            backend=Backend.CLAUDE,
-            timeout_minutes=15,
-        )
-        assert rule.timeout_seconds == 900
+        assert result.ok
 
 
 # ---------------------------------------------------------------------------
@@ -354,25 +247,23 @@ steps: []
         assert cfg.budget == 5
 
     def test_resolve_step_prompts(self, tmp_path):
-        from langywrap.ralph.config import StepConfig, StepRole, _resolve_step_prompts
+        from langywrap.ralph.config import StepConfig, _resolve_step_prompts
         prompts = tmp_path / "prompts"
         prompts.mkdir()
         step = StepConfig(
             name="orient",
             prompt_template=Path("orient.md"),
-            role=StepRole.ORIENT,
         )
         resolved = _resolve_step_prompts([step], prompts)
         assert resolved[0].prompt_template == prompts / "orient.md"
 
     def test_resolve_step_prompts_with_retry_template(self, tmp_path):
-        from langywrap.ralph.config import StepConfig, StepRole, _resolve_step_prompts
+        from langywrap.ralph.config import StepConfig, _resolve_step_prompts
         prompts = tmp_path / "prompts"
         prompts.mkdir()
         step = StepConfig(
             name="execute",
             prompt_template=Path("execute.md"),
-            role=StepRole.EXECUTE,
             retry_prompt_template=Path("retry.md"),
         )
         resolved = _resolve_step_prompts([step], prompts)

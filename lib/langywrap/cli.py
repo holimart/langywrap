@@ -327,13 +327,17 @@ def _build_router(project_dir: Path) -> ExecutionRouter:  # noqa: F821
 
     Discovers:
       - .exec/execwrap.bash for security wrapping
-      - .langywrap/router.yaml for model routing
+      - .langywrap/ralph.py or ralph.yaml for the pipeline spec
       - opencode binary at ~/.opencode/bin/opencode or PATH
       - .env for API keys (NVIDIA_API_KEY, OPENROUTER_API_KEY)
     """
+    from langywrap.ralph.config import load_ralph_config
     from langywrap.router.backends import Backend, BackendConfig
-    from langywrap.router.config import load_route_config
-    from langywrap.router.router import ExecutionRouter
+    from langywrap.router.router import (
+        ExecutionRouter,
+        _infer_backend_from_model,
+        _resolve_engine_backend,
+    )
 
     # Load .env if present
     env_file = project_dir / ".env"
@@ -349,31 +353,8 @@ def _build_router(project_dir: Path) -> ExecutionRouter:  # noqa: F821
                 if key and key not in os.environ:
                     os.environ[key] = val
 
-    # Try Python pipeline first (.langywrap/ralph.py)
-    route_config = None
-    from langywrap.ralph.pipeline import load_pipeline_config
-
-    pipeline = load_pipeline_config(project_dir)
-    if pipeline is not None:
-        route_config = pipeline.to_route_config(project_dir)
-
-    # Try v2 YAML config (models: section in ralph.yaml)
-    if route_config is None:
-        for cfg_candidate in [".langywrap/ralph.yaml", ".langywrap/ralph.yml", "ralph.yaml"]:
-            cfg_path = project_dir / cfg_candidate
-            if cfg_path.exists():
-                import yaml as _yaml
-
-                with cfg_path.open() as _fh:
-                    _raw = _yaml.safe_load(_fh) or {}
-                if "flow" in _raw:
-                    from langywrap.ralph.config_v2 import build_route_config_from_v2
-
-                    route_config = build_route_config_from_v2(_raw, project_dir)
-                break
-
-    if route_config is None:
-        route_config = load_route_config(project_dir)
+    # Resolve the pipeline's step list — that's where model+engine live now.
+    ralph_cfg = load_ralph_config(project_dir)
 
     from langywrap.helpers.discovery import find_execwrap, find_rtk
 
@@ -387,19 +368,16 @@ def _build_router(project_dir: Path) -> ExecutionRouter:  # noqa: F821
         if oc_path.exists():
             opencode_bin = str(oc_path)
 
-    # Build backend configs for all backends referenced in route rules
+    # Build backend configs for every backend actually referenced by a step.
     backends: dict[Backend, BackendConfig] = {}
 
-    used_backends = {rule.backend for rule in route_config.rules}
-    used_backends.add(route_config.default_backend)
-
-    # Derive backend timeout from the max step timeout in route rules.
-    # BackendConfig.timeout_seconds caps per-call duration via
-    # min(step_timeout, backend_timeout), so it must be >= the longest step.
-    max_step_timeout = max(
-        (rule.timeout_seconds for rule in route_config.rules),
-        default=1800,
-    )
+    used_backends: set[Backend] = set()
+    max_step_timeout = 1800  # seconds
+    for step in ralph_cfg.steps:
+        backend = _resolve_engine_backend(step.engine) or _infer_backend_from_model(step.model)
+        used_backends.add(backend)
+        max_step_timeout = max(max_step_timeout, step.timeout_minutes * 60)
+    used_backends.add(Backend.CLAUDE)  # default fallback backend
 
     import logging as _logging
 
@@ -439,7 +417,11 @@ def _build_router(project_dir: Path) -> ExecutionRouter:  # noqa: F821
             timeout_seconds=max_step_timeout,
         )
 
-    router = ExecutionRouter(route_config, backends)
+    throttle_window: tuple[int, int] | None = None
+    if ralph_cfg.throttle_utc_start is not None and ralph_cfg.throttle_utc_end is not None:
+        throttle_window = (ralph_cfg.throttle_utc_start, ralph_cfg.throttle_utc_end)
+
+    router = ExecutionRouter(backends=backends, peak_hours=throttle_window)
     return router
 
 
@@ -624,25 +606,26 @@ def router() -> None:
 @router.command("show")
 @click.argument("path", type=click.Path(exists=True), required=False, default=".")
 def router_show(path: str) -> None:
-    """Show the current router configuration."""
-    from langywrap.router.config import load_route_config
+    """Show how each pipeline step resolves to a model + backend."""
+    from langywrap.ralph.config import load_ralph_config
+    from langywrap.router.router import _infer_backend_from_model, _resolve_engine_backend
 
     project_dir = Path(path).resolve()
-    cfg = load_route_config(project_dir)
-    click.echo(f"Router: {cfg.name}")
-    click.echo(f"Description: {cfg.description}")
-    click.echo(f"Review every: {cfg.review_every_n} cycles")
-    click.echo(f"Default backend: {cfg.default_backend.value}")
-    if cfg.peak_hours:
-        click.echo(f"Peak hours: {cfg.peak_hours[0]:02d}:00-{cfg.peak_hours[1]:02d}:00 UTC")
-    click.echo(f"\nRules ({len(cfg.rules)}):")
-    for rule in cfg.rules:
-        cond = f"  if {rule.conditions}" if rule.conditions else ""
-        retry = f"  retry: {rule.retry_models}" if rule.retry_models else ""
+    cfg = load_ralph_config(project_dir)
+    click.echo(f"Project: {project_dir.name}")
+    if cfg.throttle_utc_start is not None and cfg.throttle_utc_end is not None:
         click.echo(
-            f"  {rule.role.value:<12} {rule.model:<40} "
-            f"{rule.backend.value:<10} {rule.tier.value:<6} "
-            f"{rule.timeout_minutes}m{cond}{retry}"
+            f"Peak hours: {cfg.throttle_utc_start:02d}:00-"
+            f"{cfg.throttle_utc_end:02d}:00 UTC"
+        )
+    click.echo(f"\nSteps ({len(cfg.steps)}):")
+    for step in cfg.steps:
+        backend = _resolve_engine_backend(step.engine) or _infer_backend_from_model(step.model)
+        retry = f"  retry: {step.retry_models}" if step.retry_models else ""
+        click.echo(
+            f"  {step.name:<12} {step.model:<40} "
+            f"{backend.value:<10} "
+            f"{step.timeout_minutes}m{retry}"
         )
 
 
@@ -650,13 +633,20 @@ def router_show(path: str) -> None:
 @click.option("--model", "-m", default=None, help="Test a specific model only.")
 @click.argument("path", type=click.Path(exists=True), required=False, default=".")
 def router_test(model: str | None, path: str) -> None:
-    """Dry-run: ping all configured models (or one) and report reachability."""
-    project_dir = Path(path).resolve()
-    router_instance = _build_router(project_dir)
-    results = router_instance.dry_run()
+    """Dry-run: ping every (model, engine) combination from the pipeline."""
+    from langywrap.ralph.config import load_ralph_config
 
-    for role, model_name, reachable in results:
+    project_dir = Path(path).resolve()
+    cfg = load_ralph_config(project_dir)
+    router_instance = _build_router(project_dir)
+
+    targets = [
+        (step.model, step.engine, step.timeout_minutes * 60) for step in cfg.steps
+    ]
+    results = router_instance.dry_run(targets)
+
+    for model_name, engine_name, reachable in results:
         if model and model not in model_name:
             continue
         status = click.style("OK", fg="green") if reachable else click.style("FAIL", fg="red")
-        click.echo(f"  {role.value:<12} {model_name:<40} {status}")
+        click.echo(f"  {model_name:<40} {engine_name:<10} {status}")

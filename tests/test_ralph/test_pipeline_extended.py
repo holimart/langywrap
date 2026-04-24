@@ -338,29 +338,31 @@ class TestToRalphConfigStepGate:
 
 
 # ---------------------------------------------------------------------------
-# to_route_config
+# Per-step routing is now inline on Step; no separate RouteConfig to build.
+# These tests exercise the same surfaces via ``to_ralph_config`` + StepConfig.
 # ---------------------------------------------------------------------------
 
 
-class TestToRouteConfig:
-    def test_returns_none_when_no_steps(self, tmp_path):
+class TestStepRoutingPropagation:
+    def test_empty_pipeline_produces_empty_steps(self, tmp_path):
         p = Pipeline(steps=[])
-        result = p.to_route_config(tmp_path)
-        # Either None (no rules) or RouteConfig
-        assert result is None or hasattr(result, "rules")
+        cfg = p.to_ralph_config(tmp_path)
+        assert cfg.steps == []
 
-    def test_basic_route_config(self, tmp_path):
+    def test_steps_carry_model_and_timeout(self, tmp_path):
         p = Pipeline(
             steps=[
-                Step("orient", model="haiku"),
-                Step("execute", model="kimi"),
+                Step("orient", model="haiku", timeout=15),
+                Step("execute", model="kimi", timeout=120),
             ]
         )
-        result = p.to_route_config(tmp_path)
-        if result is not None:  # only if router module available
-            assert len(result.rules) >= 1
+        cfg = p.to_ralph_config(tmp_path)
+        assert len(cfg.steps) == 2
+        models = {s.name: s.model for s in cfg.steps}
+        assert "haiku" in models["orient"]
+        assert models["execute"] == "nvidia/moonshotai/kimi-k2.5"
 
-    def test_loop_steps_produce_rules(self, tmp_path):
+    def test_loop_steps_flattened_into_config(self, tmp_path):
         p = Pipeline(
             steps=[
                 Loop("dev", max=3, steps=[
@@ -369,19 +371,21 @@ class TestToRouteConfig:
                 ])
             ]
         )
-        result = p.to_route_config(tmp_path)
-        if result is not None:
-            assert len(result.rules) >= 1
+        cfg = p.to_ralph_config(tmp_path)
+        names = {s.name for s in cfg.steps}
+        assert {"engineer", "review"}.issubset(names)
 
-    def test_periodic_step_produces_rule(self, tmp_path):
+    def test_periodic_adversarial_step_added_non_pipeline(self, tmp_path):
         p = Pipeline(
             steps=[Step("orient", model="haiku")],
             periodic=[
                 Periodic(every=12, step=Step("adversarial", model="sonnet"))
             ],
         )
-        p.to_route_config(tmp_path)
-        # Should not raise regardless of router availability
+        cfg = p.to_ralph_config(tmp_path)
+        adv = next((s for s in cfg.steps if s.name == "adversarial"), None)
+        assert adv is not None
+        assert adv.pipeline is False
 
 
 # ---------------------------------------------------------------------------

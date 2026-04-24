@@ -4,10 +4,9 @@ langywrap.ralph.config_v2 — Clean, grouped YAML config format for ralph loops.
 V2 format groups related concerns into readable sections:
     models, flow, gates, adversarial, throttle, git, secrets, scope, cycle_types
 
-The parser reads v2 YAML and produces the same RalphConfig + RouteConfig
-objects used by the runner and ExecutionRouter — zero runtime changes needed.
-
-Detection: a YAML file with a ``flow:`` key is treated as v2.
+The parser reads v2 YAML and produces a RalphConfig. Routing (model + engine
+per step) is carried on each StepConfig directly — there is no separate
+RouteConfig. Detection: a YAML file with a ``flow:`` key is treated as v2.
 """
 
 from __future__ import annotations
@@ -20,22 +19,7 @@ from langywrap.ralph.config import (
     QualityGateConfig,
     RalphConfig,
     StepConfig,
-    StepRole,
 )
-
-# Router types — optional import (ralph is usable without router)
-try:
-    from langywrap.router.config import (
-        Backend,
-        RouteConfig,
-        RouteRule,
-    )
-    from langywrap.router.config import (
-        StepRole as RouterStepRole,
-    )
-except ImportError:
-    RouteConfig = None  # type: ignore[assignment,misc]
-
 
 # ---------------------------------------------------------------------------
 # Model alias resolution
@@ -60,25 +44,6 @@ def _infer_backend(model: str) -> str:
         if model.startswith(prefix):
             return "opencode"
     return "claude"
-
-
-_ROLE_ALIASES: dict[str, StepRole] = {
-    "validate": StepRole.CRITIC,
-    "adversarial": StepRole.CRITIC,
-    "review": StepRole.REVIEW,
-}
-
-
-def _infer_role(name: str) -> StepRole:
-    """Infer StepRole from step name."""
-    name_lower = name.lower()
-    # Check aliases first
-    if name_lower in _ROLE_ALIASES:
-        return _ROLE_ALIASES[name_lower]
-    for role in StepRole:
-        if role.value in name_lower:
-            return role
-    return StepRole.GENERIC
 
 
 # ---------------------------------------------------------------------------
@@ -130,7 +95,6 @@ def _parse_flow_entry(
 
     # Resolve model
     model_id = _resolve_model(opts.get("model", models.get(name, "")))
-    role = _infer_role(name)
 
     # Parse timeout: accept "120m" or int
     timeout_raw = opts.get("timeout", 30)
@@ -183,7 +147,6 @@ def _parse_flow_entry(
     return [StepConfig(
         name=name,
         prompt_template=template_path,
-        role=role,
         timeout_minutes=timeout,
         confirmation_token=opts.get("token", ""),
         depends_on=opts.get("depends_on", []),
@@ -198,6 +161,9 @@ def _parse_flow_entry(
         fail_fast=opts.get("fail_fast", False),
         pipeline=opts.get("pipeline", True),
         every_n=opts.get("every", 0),
+        validates_plan=bool(opts.get("validates_plan", False)),
+        primary=bool(opts.get("primary", False)),
+        includes_orient_context=bool(opts.get("includes_orient_context", False)),
     )]
 
 
@@ -390,7 +356,6 @@ def load_v2(raw: dict, project_dir: Path) -> RalphConfig:
             steps.append(StepConfig(
                 name=name,
                 prompt_template=template,
-                role=_infer_role(name),
                 timeout_minutes=45,
                 model=model_id,
                 pipeline=False,
@@ -490,63 +455,3 @@ def load_v2(raw: dict, project_dir: Path) -> RalphConfig:
     )
 
 
-def build_route_config_from_v2(raw: dict, project_dir: Path) -> RouteConfig | None:
-    """Build a RouteConfig from v2 YAML models section.
-
-    Models can be specified as:
-      - string: ``execute: kimi`` (short alias, auto-infer backend + fallback)
-      - dict: ``execute: {model: kimi, retry: [sonnet, haiku], backend: opencode}``
-
-    Returns None if router module is not available.
-    """
-    if RouteConfig is None:
-        return None
-
-    models = raw.get("models", {})
-    if not models:
-        return None
-
-    rules: list[RouteRule] = []
-    for name, model_spec in models.items():
-        # Parse model spec: string or dict
-        if isinstance(model_spec, str):
-            model_id = _resolve_model(model_spec)
-            retry_models_raw: list[str] = []
-            backend_override = ""
-        elif isinstance(model_spec, dict):
-            model_id = _resolve_model(str(model_spec.get("model", "")))
-            retry_models_raw = model_spec.get("retry", [])
-            backend_override = model_spec.get("backend", "")
-        else:
-            continue
-
-        backend_str = backend_override or _infer_backend(model_id)
-
-        try:
-            role = RouterStepRole(name)
-        except ValueError:
-            # Not a standard role — skip (e.g. "lean_retry")
-            continue
-
-        backend = Backend(backend_str)
-
-        # Resolve retry models
-        retry_models = [_resolve_model(m) for m in retry_models_raw]
-        # Default fallback to sonnet if none specified and not already sonnet
-        if not retry_models and model_id != _resolve_model("sonnet"):
-            retry_models = [_resolve_model("sonnet")]
-
-        rules.append(RouteRule(
-            role=role,
-            model=model_id,
-            backend=backend,
-            retry_models=retry_models,
-            retry_max=2,
-        ))
-
-    return RouteConfig(
-        name=raw.get("name", project_dir.name),
-        description=f"Auto-generated from v2 config for {project_dir.name}",
-        rules=rules,
-        default_backend=Backend.CLAUDE,
-    )

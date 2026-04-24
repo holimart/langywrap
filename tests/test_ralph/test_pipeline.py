@@ -520,24 +520,18 @@ class TestLoopConversion:
 # ---------------------------------------------------------------------------
 
 
-class TestRouteConfig:
-    def test_basic(self, tmp_path: Path):
-        """Steps → RouteConfig rules."""
+class TestStepDispatchInfo:
+    def test_step_retry_chain_populated(self, tmp_path: Path):
+        """``Step.fallback`` becomes ``StepConfig.retry_models``."""
         p = Pipeline(steps=[
             Step("orient", model="haiku"),
             Step("execute", model="kimi", fallback="sonnet"),
             Step("finalize", model="kimi"),
         ])
 
-        route_cfg = p.to_route_config(tmp_path)
+        cfg = p.to_ralph_config(tmp_path)
+        by_name = {s.name: s for s in cfg.steps}
 
-        if route_cfg is None:
-            pytest.skip("Router module not available")
-
-        assert len(route_cfg.rules) >= 2
-        orient_rule = next(r for r in route_cfg.rules if r.role.value == "orient")
-        assert orient_rule.model == "claude-haiku-4-5-20251001"
-
-        execute_rule = next(r for r in route_cfg.rules if r.role.value == "execute")
-        assert execute_rule.model == "nvidia/moonshotai/kimi-k2.5"
-        assert "claude-sonnet-4-6" in execute_rule.retry_models
+        assert by_name["orient"].model == "claude-haiku-4-5-20251001"
+        assert by_name["execute"].model == "nvidia/moonshotai/kimi-k2.5"
+        assert "claude-sonnet-4-6" in by_name["execute"].retry_models

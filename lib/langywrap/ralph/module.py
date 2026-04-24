@@ -72,24 +72,6 @@ def _resolve_model(name: str) -> str:
     return _MODEL_ALIASES.get(name, name)
 
 
-def _infer_role(name: str) -> str:
-    """Infer StepRole value from step name."""
-    from langywrap.ralph.config import StepRole
-
-    _aliases = {
-        "validate": "critic",
-        "adversarial": "critic",
-        "review": "review",
-    }
-    name_lower = name.lower()
-    if name_lower in _aliases:
-        return _aliases[name_lower]
-    for role in StepRole:
-        if role.value in name_lower:
-            return role.value
-    return "generic"
-
-
 # ---------------------------------------------------------------------------
 # StepDef — class-level step definition (descriptor)
 # ---------------------------------------------------------------------------
@@ -441,14 +423,10 @@ class Module:
             self._log(f"  └── {name}: SKIP (no prompt template: {prompt_path})\n")
             return f"# {name} ERROR: no prompt template\n", False
 
-        # Build prompt
-        from langywrap.ralph.config import StepRole
-
         template = prompt_path.read_text(encoding="utf-8")
         if inject:
             template = template + "\n\n---\n\n" + inject
 
-        role_str = _infer_role(name)
         is_orient = name == "orient"
 
         full_prompt = build_full_prompt(
@@ -469,21 +447,16 @@ class Module:
             return output, True
 
         tools_str = ",".join(tools)
-        try:
-            role_enum = StepRole(role_str) if role_str != "generic" else StepRole.GENERIC
-        except ValueError:
-            role_enum = StepRole.GENERIC
-
         max_attempts = 3
         for attempt in range(1, max_attempts + 1):
             try:
                 result = runner.router.execute(
-                    role=role_enum,
                     prompt=full_prompt,
-                    timeout_minutes=timeout,
                     model=model,
-                    tools=tools_str,
                     engine="auto",
+                    timeout_minutes=timeout,
+                    tools=tools_str,
+                    tag=name,
                 )
                 output = result.text
                 self._outputs[name] = output
@@ -881,13 +854,7 @@ class ModuleRunner:
             return None
 
         # Commit
-        plan = self.state.read_plan()
-        summary = ""
-        for line in plan.splitlines():
-            line = line.strip()
-            if line and not line.startswith("#"):
-                summary = line[:72]
-                break
+        summary = self._extract_commit_summary(cycle_num)
         msg = f"chore(ralph): cycle {cycle_num} — {summary or 'auto'}"
 
         try:
@@ -910,6 +877,74 @@ class ModuleRunner:
             return commit_hash
         except subprocess.CalledProcessError:
             return None
+
+    def _extract_commit_summary(self, cycle_num: int) -> str:
+        """Prefer finalized one-line summaries over raw plan frontmatter."""
+        summary = self._extract_progress_summary(cycle_num)
+        if summary:
+            return summary
+
+        for text in (
+            self.state.read_plan(),
+            self.state.read_step_output("plan"),
+            self.state.read_step_output("orient"),
+            self.state.read_step_output("finalize"),
+        ):
+            summary = self._extract_first_meaningful_line(text)
+            if summary:
+                return summary
+
+        return ""
+
+    def _extract_progress_summary(self, cycle_num: int) -> str:
+        if not self.state.progress_file.exists():
+            return ""
+
+        text = self.state.progress_file.read_text(encoding="utf-8")
+        cycle_match = re.search(
+            rf"^## Cycle {cycle_num}\b(.*?)(?=^## Cycle \d+\b|\Z)",
+            text,
+            re.MULTILINE | re.DOTALL,
+        )
+        if cycle_match:
+            for line in cycle_match.group(1).splitlines():
+                stripped = line.strip()
+                if stripped.lower().startswith("one-line:"):
+                    return stripped.split(":", 1)[1].strip()[:72]
+
+        table_match = re.search(
+            rf"^\|\s*{cycle_num}\s*\|.*?\|\s*([^|]+?)\s*\|$",
+            text,
+            re.MULTILINE,
+        )
+        if table_match:
+            return table_match.group(1).strip()[:72]
+
+        return ""
+
+    @staticmethod
+    def _extract_first_meaningful_line(text: str) -> str:
+        for raw_line in text.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            if line in {"---", "```"}:
+                continue
+            if line.startswith(("#", "<", "{")):
+                continue
+            if line.endswith(":"):
+                continue
+            if re.match(r"^[A-Z_]+_CONFIRMED:\s*", line):
+                continue
+            if re.fullmatch(r"[-=*`~]{3,}", line):
+                continue
+
+            line = re.sub(r"^[-*+]\s+", "", line)
+            line = re.sub(r"^\d+\.\s+", "", line)
+            line = re.sub(r"^[*_`]+|[*_`]+$", "", line).strip()
+            if line:
+                return line[:72]
+        return ""
 
     def _scan_secrets(self) -> str | None:
         """Check staged filenames against secret patterns."""

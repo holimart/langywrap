@@ -16,7 +16,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from langywrap.ralph.config import RalphConfig, StepConfig, StepRole
+from langywrap.ralph.config import RalphConfig, StepConfig
 from langywrap.ralph.runner import RalphLoop
 from langywrap.ralph.state import CycleResult
 
@@ -38,8 +38,8 @@ def _make_config(tmp_path: Path, **kwargs) -> RalphConfig:
     step = StepConfig(
         name="orient",
         prompt_template=template,
-        role=StepRole.ORIENT,
         confirmation_token="ORIENT_CONFIRMED:",
+        includes_orient_context=True,
     )
     return RalphConfig(
         project_dir=tmp_path,

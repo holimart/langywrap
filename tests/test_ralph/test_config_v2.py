@@ -4,17 +4,14 @@ import warnings
 from pathlib import Path
 
 import pytest
-from langywrap.ralph.config import StepRole
 from langywrap.ralph.config_v2 import (
     _infer_backend,
-    _infer_role,
     _parse_adversarial,
     _parse_flow_entry,
     _parse_gates,
     _parse_retry,
     _parse_when,
     _resolve_model,
-    build_route_config_from_v2,
     is_v2_config,
     load_v2,
 )
@@ -65,44 +62,8 @@ def test_infer_backend_moonshotai():
     assert _infer_backend("moonshotai/kimi") == "opencode"
 
 
-# ---------------------------------------------------------------------------
-# _infer_role
-# ---------------------------------------------------------------------------
-
-
-def test_infer_role_orient():
-    role = _infer_role("orient")
-    assert role == StepRole.ORIENT
-
-
-def test_infer_role_execute():
-    role = _infer_role("execute")
-    assert role == StepRole.EXECUTE
-
-
-def test_infer_role_critic():
-    role = _infer_role("critic")
-    assert role == StepRole.CRITIC
-
-
-def test_infer_role_validate_alias():
-    role = _infer_role("validate")
-    assert role == StepRole.CRITIC
-
-
-def test_infer_role_adversarial_alias():
-    role = _infer_role("adversarial")
-    assert role == StepRole.CRITIC
-
-
-def test_infer_role_review_alias():
-    role = _infer_role("review")
-    assert role == StepRole.REVIEW
-
-
-def test_infer_role_unknown_is_generic():
-    role = _infer_role("custom_step")
-    assert role == StepRole.GENERIC
+# _infer_role — deleted. Step role is now a free-form name only; no enum.
+# Tests for the (long-gone) role inference from step names have been removed.
 
 
 # ---------------------------------------------------------------------------
@@ -402,54 +363,6 @@ def test_load_v2_git_config(tmp_path):
     assert "src/" in config.git_add_paths
 
 
-# ---------------------------------------------------------------------------
-# build_route_config_from_v2
-# ---------------------------------------------------------------------------
-
-
-def test_build_route_config_from_v2_minimal(tmp_path):
-    raw = {
-        "name": "test",
-        "models": {"execute": "haiku"},
-    }
-    rc = build_route_config_from_v2(raw, tmp_path)
-    assert rc is not None
-    assert len(rc.rules) >= 1
-
-
-def test_build_route_config_no_models(tmp_path):
-    raw = {"name": "test"}
-    rc = build_route_config_from_v2(raw, tmp_path)
-    assert rc is None
-
-
-def test_build_route_config_dict_model_spec(tmp_path):
-    raw = {
-        "models": {
-            "execute": {
-                "model": "haiku",
-                "retry": ["sonnet"],
-                "backend": "claude",
-            }
-        }
-    }
-    rc = build_route_config_from_v2(raw, tmp_path)
-    assert rc is not None
-    rules_by_role = {r.role.value: r for r in rc.rules}
-    assert "execute" in rules_by_role
-    assert len(rules_by_role["execute"].retry_models) >= 1
-
-
-def test_build_route_config_unknown_role_skipped(tmp_path):
-    raw = {
-        "models": {
-            "unknown_role_xyz": "haiku",
-            "execute": "haiku",
-        }
-    }
-    rc = build_route_config_from_v2(raw, tmp_path)
-    assert rc is not None
-    # Only execute should be included (unknown_role_xyz raises ValueError in RouterStepRole)
-    role_names = [r.role.value for r in rc.rules]
-    assert "execute" in role_names
-    assert "unknown_role_xyz" not in role_names
+# build_route_config_from_v2 — deleted. RouteConfig/RouteRule were removed
+# in the routing-flattening refactor; model+engine now live on each
+# ``StepConfig`` directly and are picked up by ``ExecutionRouter.execute``.

@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from langywrap.ralph.config import QualityGateConfig, RalphConfig, StepConfig, StepRole
+from langywrap.ralph.config import QualityGateConfig, RalphConfig, StepConfig
 from langywrap.ralph.context import (
     build_full_prompt,
     build_orient_context,
@@ -209,6 +209,13 @@ class RalphLoop:
             else:
                 consecutive_failures = 0
 
+            if result.auth_failed:
+                self._log(
+                    "AUTH FAILURE — stopping loop. "
+                    f"Snippet: {result.auth_failed_snippet!r}"
+                )
+                break
+
             if result.rate_limited:
                 self._log("Rate limit detected — stopping loop.")
                 break
@@ -364,6 +371,33 @@ class RalphLoop:
                 if step_sr.files_accessed:
                     result.files_accessed[output_key] = step_sr.files_accessed
 
+            # Auth-failure detection: terminal, no retries, stops the whole
+            # loop. OpenCode OAuth refresh 401 (or provider 401/403) will keep
+            # failing on every subsequent step — retrying just burns cycles and
+            # produces empty git commits. Surface the failure loudly so the
+            # operator can re-auth and resume with --resume.
+            if step_sr is not None and step_sr.auth_failed:
+                snippet = step_sr.auth_failed_snippet or "<no snippet captured>"
+                self._log(
+                    f"  [{step.name}] AUTH FAILURE detected — stopping loop. "
+                    f"No retries. Snippet: {snippet!r}"
+                )
+                self._log(
+                    "  Re-authenticate the affected provider (e.g. "
+                    "`opencode auth login`) then re-run with --resume."
+                )
+                # Persist output so the failing response is inspectable.
+                out_path = self.state.step_output_path(output_key)
+                out_path.write_text(output, encoding="utf-8")
+                result.steps_completed[output_key] = out_path
+                result.confirmed_tokens[output_key] = False
+                result.auth_failed = True
+                result.auth_failed_snippet = snippet
+                # Skip post-cycle commands and the git commit on auth failure
+                # so the loop doesn't churn out empty "progress" commits.
+                result.duration_seconds = time.monotonic() - t_start
+                return result
+
             # Rate-limit detection: the router is the single source of truth.
             # Do not rescan successful output here; that caused false positives
             # from ordinary JSON/tool output containing numbers like 429.
@@ -411,7 +445,7 @@ class RalphLoop:
             result.confirmed_tokens[output_key] = confirmed
 
             # Optional plan validation after the step that is expected to write plan.md.
-            if step.name in {"orient", "plan"} and self._plan_validation_enabled():
+            if step.validates_plan and self._plan_validation_enabled():
                 plan_ok, plan_error = self._validate_plan(cycle_num)
                 if not plan_ok:
                     self._log(f"  └── {step.name}: PLAN INVALID — {plan_error}")
@@ -468,9 +502,10 @@ class RalphLoop:
                 self._log(f"  └── {step.name}: FAIL-FAST — aborting remaining steps\n")
                 abort_remaining = True
 
-            # Detect cycle type after plan step (needs fresh plan.md)
-            if step.name == "plan" and success:
-                cycle_type = self._detect_cycle_type()
+            # Detect cycle type after the configured source step (default 'plan').
+            # Setting cycle_type_source='orient' lets orient drive plan branching.
+            if step.name == self.config.cycle_type_source and success:
+                cycle_type = self._detect_cycle_type(output)
                 if cycle_type:
                     self._log(f"  Cycle type: {cycle_type.upper()}")
 
@@ -501,8 +536,8 @@ class RalphLoop:
 
         # Git commit
         if self.config.git_commit_after_cycle:
-            plan_summary = self._extract_plan_summary()
-            commit_hash = self.safe_git_commit(cycle_num, plan_summary)
+            commit_summary = self._extract_commit_summary(cycle_num)
+            commit_hash = self.safe_git_commit(cycle_num, commit_summary)
             result.git_commit_hash = commit_hash
 
         result.duration_seconds = time.monotonic() - t_start
@@ -539,13 +574,14 @@ class RalphLoop:
         for attempt in range(1, max_attempts + 1):
             try:
                 result = self.router.execute(
-                    role=step.role,
                     prompt=prompt,
-                    timeout_minutes=step.timeout_minutes,
-                    model=step.model or None,
-                    tools=step.tools,
+                    model=step.model,
                     engine=step.engine,
+                    timeout_minutes=step.timeout_minutes,
+                    tools=step.tools,
+                    retry_models=list(step.retry_models),
                     abort_on_hang=step.fail_fast,
+                    tag=step.name,
                 )
                 return result.text, result.ok, result
             except TimeoutError as exc:
@@ -603,16 +639,16 @@ class RalphLoop:
                 f"Validation error: {plan_validation_error}\n"
             )
 
-        is_orient = step.name == "orient"
+        wants_orient_ctx = step.includes_orient_context
 
         return build_full_prompt(
             template=template,
             project_dir=self.config.project_dir,
             state_dir=self.config.resolved_state_dir,
             cycle_num=cycle_num,
-            orient_context=orient_context if is_orient else "",
+            orient_context=orient_context if wants_orient_ctx else "",
             scope_restriction=self.config.scope_restriction,
-            is_orient_step=is_orient,
+            is_orient_step=wants_orient_ctx,
             enrichments=step.enrich,
         )
 
@@ -767,8 +803,13 @@ class RalphLoop:
     def dry_run(self) -> dict:
         """Validate setup without running any AI calls.
 
-        Returns a dict with validation results.
+        Returns a dict with validation results. Also prints the same
+        enrichment-channel + graphify-health preflight as ``run()`` so
+        operators catch missing CLIs before spending tokens.
         """
+        self._warn_redundant_enrichment()
+        self._verify_graphify_health()
+
         report: dict = {
             "project_dir": str(self.config.project_dir),
             "state_dir": str(self.config.resolved_state_dir),
@@ -796,7 +837,6 @@ class RalphLoop:
                 "template_size": (
                     step.prompt_template.stat().st_size if step.prompt_template.exists() else 0
                 ),
-                "role": str(step.role),
                 "timeout_minutes": step.timeout_minutes,
                 "confirmation_token": step.confirmation_token,
             }
@@ -804,9 +844,13 @@ class RalphLoop:
 
         # Router + backends
         if self.router is not None:
+            from langywrap.router.router import (
+                _infer_backend_from_model,
+                _resolve_engine_backend,
+            )
+
             router_info: dict = {
                 "type": type(self.router).__name__,
-                "config_name": getattr(self.router._config, "name", "?"),
                 "backends": {},
                 "routing": [],
             }
@@ -816,40 +860,24 @@ class RalphLoop:
                     "execwrap": backend_cfg.execwrap_path,
                     "rtk": backend_cfg.rtk_path,
                 }
-            # Show how each step would be routed
+            # Show how each step would dispatch (resolved from Step fields alone).
             for step in self.config.steps:
-                try:
-                    from langywrap.router.config import StepRole as RouterStepRole
-
-                    role = RouterStepRole(step.role.value)
-                    rule = self.router.route(role)
-                    # Show effective model/engine (step config takes priority)
-                    effective_model = step.model or rule.model
-                    effective_backend = rule.backend.value
-                    if step.engine and step.engine != "auto":
-                        effective_backend = step.engine
-                    # Claude models always run on claudecode regardless of engine override.
-                    if effective_model.startswith("claude-"):
-                        effective_backend = "claude"
-                    entry: dict[str, Any] = {
-                        "step": step.name,
-                        "model": effective_model,
-                        "backend": effective_backend,
-                        "timeout_minutes": step.timeout_minutes,
-                        "retry_models": rule.retry_models,
-                    }
-                    if step.run_if_cycle_types:
-                        entry["when_cycle"] = step.run_if_cycle_types
-                    if step.output_as:
-                        entry["output_as"] = step.output_as
-                    router_info["routing"].append(entry)
-                except (LookupError, ValueError):
-                    router_info["routing"].append(
-                        {
-                            "step": step.name,
-                            "error": f"no rule for role={step.role.value}",
-                        }
-                    )
+                effective_model = step.model
+                effective_backend_enum = _resolve_engine_backend(
+                    step.engine
+                ) or _infer_backend_from_model(effective_model)
+                entry: dict[str, Any] = {
+                    "step": step.name,
+                    "model": effective_model,
+                    "backend": effective_backend_enum.value,
+                    "timeout_minutes": step.timeout_minutes,
+                    "retry_models": list(step.retry_models),
+                }
+                if step.run_if_cycle_types:
+                    entry["when_cycle"] = step.run_if_cycle_types
+                if step.output_as:
+                    entry["output_as"] = step.output_as
+                router_info["routing"].append(entry)
             report["router"] = router_info
         else:
             report["router"] = "None (stub mode)"
@@ -1106,25 +1134,18 @@ class RalphLoop:
     def _primary_backend_name(self) -> str:
         """Infer the primary execution backend for this pipeline.
 
-        Peak-hour throttling is checked before each cycle, so this uses the first
-        execute-like pipeline step as the best available approximation.
+        Peak-hour throttling is checked before each cycle. Projects mark one
+        step with ``primary=True``; if none is marked, throttling finds no
+        backend to compare against and simply does not skip.
         """
         for step in self.config.steps:
-            if not step.pipeline:
+            if not step.pipeline or not step.primary:
                 continue
-            if step.role == StepRole.EXECUTE or step.name == "execute":
-                if step.engine and step.engine != "auto":
-                    return step.engine
-                if step.model:
-                    return _infer_backend_from_model(step.model).value
-                break
-
-        if self.router is not None:
-            try:
-                rule = self.router.route(StepRole.EXECUTE, {})
-                return rule.backend.value
-            except Exception:
-                return ""
+            if step.engine and step.engine != "auto":
+                return step.engine
+            if step.model:
+                return _infer_backend_from_model(step.model).value
+            break
 
         return ""
 
@@ -1160,28 +1181,32 @@ class RalphLoop:
     # Cycle type detection
     # ------------------------------------------------------------------
 
-    def _detect_cycle_type(self) -> str:
-        """Classify the current cycle by matching plan.md against cycle_type_rules.
+    def _detect_cycle_type(self, source_output: str = "") -> str:
+        """Classify the current cycle by matching the source step's output
+        against cycle_type_rules.
+
+        ``source_output`` is the freshly produced text from the source step
+        (orient or plan); falling back to reading plan.md preserves the
+        legacy behaviour for callers that don't pass it.
 
         Returns the cycle type name, or empty string if no rule matches.
 
-        Uses last-match-wins semantics: when multiple rules match (e.g. a
-        research plan that also mentions Lean terms), the rule defined later
-        in the config takes priority.  Place more specific / narrower rules
-        after broader ones in ``cycle_types``.
+        Uses last-match-wins semantics: when multiple rules match, the rule
+        defined later in the config takes priority. Place more specific /
+        narrower rules after broader ones in ``cycle_types``.
         """
         rules = self.config.cycle_type_rules
         if not rules:
             return ""
 
-        plan = self.state.read_plan()
-        if not plan:
+        text = source_output or self.state.read_plan()
+        if not text:
             return ""
 
         best = ""
         for rule in rules:
             pattern = rule.get("pattern", "")
-            if pattern and re.search(pattern, plan, re.IGNORECASE):
+            if pattern and re.search(pattern, text, re.IGNORECASE):
                 best = rule.get("name", "")
 
         return best
@@ -1239,12 +1264,9 @@ class RalphLoop:
             # Try finding a step template named step_adversarial.md
             template = self.config.resolved_prompts_dir / "step_adversarial.md"
             if template.exists():
-                from langywrap.ralph.config import StepRole
-
                 adv_step = StepConfig(
                     name="adversarial",
                     prompt_template=template,
-                    role=StepRole.CRITIC,
                     timeout_minutes=45,
                 )
             else:
@@ -1340,12 +1362,73 @@ class RalphLoop:
                     return fname
         return None
 
-    def _extract_plan_summary(self) -> str:
-        """Extract first non-empty line from plan.md as commit message summary."""
-        plan = self.state.read_plan()
-        for line in plan.splitlines():
-            line = line.strip()
-            if line and not line.startswith("#"):
+    def _extract_commit_summary(self, cycle_num: int) -> str:
+        """Prefer finalized one-line summaries over raw plan frontmatter."""
+        summary = self._extract_progress_summary(cycle_num)
+        if summary:
+            return summary
+
+        for text in (
+            self.state.read_plan(),
+            self.state.read_step_output("plan"),
+            self.state.read_step_output("orient"),
+            self.state.read_step_output("finalize"),
+        ):
+            summary = self._extract_first_meaningful_line(text)
+            if summary:
+                return summary
+
+        return ""
+
+    def _extract_progress_summary(self, cycle_num: int) -> str:
+        """Read the latest finalized one-line summary for this cycle if present."""
+        if not self.state.progress_file.exists():
+            return ""
+
+        text = self.state.progress_file.read_text(encoding="utf-8")
+        cycle_match = re.search(
+            rf"^## Cycle {cycle_num}\b(.*?)(?=^## Cycle \d+\b|\Z)",
+            text,
+            re.MULTILINE | re.DOTALL,
+        )
+        if cycle_match:
+            for line in cycle_match.group(1).splitlines():
+                stripped = line.strip()
+                if stripped.lower().startswith("one-line:"):
+                    return stripped.split(":", 1)[1].strip()[:72]
+
+        table_match = re.search(
+            rf"^\|\s*{cycle_num}\s*\|.*?\|\s*([^|]+?)\s*\|$",
+            text,
+            re.MULTILINE,
+        )
+        if table_match:
+            return table_match.group(1).strip()[:72]
+
+        return ""
+
+    @staticmethod
+    def _extract_first_meaningful_line(text: str) -> str:
+        """Skip markdown boilerplate and transport noise when summarizing."""
+        for raw_line in text.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            if line in {"---", "```"}:
+                continue
+            if line.startswith(("#", "<", "{")):
+                continue
+            if line.endswith(":"):
+                continue
+            if re.match(r"^[A-Z_]+_CONFIRMED:\s*", line):
+                continue
+            if re.fullmatch(r"[-=*`~]{3,}", line):
+                continue
+
+            line = re.sub(r"^[-*+]\s+", "", line)
+            line = re.sub(r"^\d+\.\s+", "", line)
+            line = re.sub(r"^[*_`]+|[*_`]+$", "", line).strip()
+            if line:
                 return line[:72]
         return ""
 

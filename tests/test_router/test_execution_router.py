@@ -1,4 +1,4 @@
-"""Tests for ExecutionRouter using MockBackend to avoid real AI calls."""
+"""Tests for the (refactored) ExecutionRouter using MockBackend."""
 
 from __future__ import annotations
 
@@ -8,13 +8,13 @@ from langywrap.router.backends import (
     BackendConfig,
     SubagentResult,
 )
-from langywrap.router.config import DEFAULT_ROUTE_CONFIG, StepRole
 from langywrap.router.router import (
     ExecutionRouter,
     _estimate_cost,
     _HeartbeatWatcher,
     _infer_backend_from_model,
     _ModelStats,
+    _resolve_engine_backend,
 )
 
 # ---------------------------------------------------------------------------
@@ -22,25 +22,10 @@ from langywrap.router.router import (
 # ---------------------------------------------------------------------------
 
 
-def make_router(mock_text: str = "OK", exit_code: int = 0) -> ExecutionRouter:
-    """Create an ExecutionRouter with a MockBackend that returns mock_text."""
-    from langywrap.router.config import ModelTier, RouteConfig, RouteRule
-
+def make_router() -> ExecutionRouter:
+    """ExecutionRouter with only the MOCK backend wired up."""
     backends = {Backend.MOCK: BackendConfig(type=Backend.MOCK)}
-    # Build a config that uses "mock-model" (non-claude) so backend stays MOCK
-    rules = []
-    for role in StepRole:
-        rules.append(RouteRule(
-            role=role,
-            model="mock-model",
-            backend=Backend.MOCK,
-            retry_models=[],
-            retry_max=0,
-            tier=ModelTier.CHEAP,
-        ))
-    config = RouteConfig(rules=rules, name="test", default_backend=Backend.MOCK)
-    router = ExecutionRouter(config=config, backends=backends)
-    return router
+    return ExecutionRouter(backends=backends, default_backend=Backend.MOCK)
 
 
 # ---------------------------------------------------------------------------
@@ -58,6 +43,27 @@ def test_infer_backend_other_model():
 
 def test_infer_backend_kimi():
     assert _infer_backend_from_model("kimi-k2") == Backend.OPENCODE
+
+
+# ---------------------------------------------------------------------------
+# _resolve_engine_backend
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_engine_auto_returns_none():
+    assert _resolve_engine_backend("auto") is None
+    assert _resolve_engine_backend("") is None
+    assert _resolve_engine_backend(None) is None
+
+
+def test_resolve_engine_explicit():
+    assert _resolve_engine_backend("claude") == Backend.CLAUDE
+    assert _resolve_engine_backend("opencode") == Backend.OPENCODE
+
+
+def test_resolve_engine_unknown_warns_none():
+    # Unknown engine returns None (caller infers from model) — and emits a warning.
+    assert _resolve_engine_backend("not-a-real-engine") is None
 
 
 # ---------------------------------------------------------------------------
@@ -131,104 +137,83 @@ def test_model_stats_record_timeout():
 # ---------------------------------------------------------------------------
 
 
-def test_router_init_default_config():
-    router = ExecutionRouter()
-    assert router._config is not None
-
-
-def test_router_init_no_backends():
+def test_router_init_defaults():
     router = ExecutionRouter()
     assert router._backends == {}
+    assert router._default_backend == Backend.CLAUDE
+
+
+def test_router_init_peak_hours():
+    router = ExecutionRouter(peak_hours=(9, 17))
+    assert router._peak_hours == (9, 17)
 
 
 # ---------------------------------------------------------------------------
-# route()
-# ---------------------------------------------------------------------------
-
-
-def test_route_returns_rule_for_orient():
-    router = ExecutionRouter()
-    rule = router.route(StepRole.ORIENT)
-    assert rule.role == StepRole.ORIENT
-
-
-def test_route_unknown_role_raises():
-    # Use a config with no rules
-    from langywrap.router.config import RouteConfig
-    empty_config = RouteConfig(rules=[], name="empty")
-    router = ExecutionRouter(config=empty_config)
-    with pytest.raises(LookupError):
-        router.route(StepRole.ORIENT)
-
-
-def test_route_review_promotion():
-    """cycle_number multiple of review_every_n promotes EXECUTE → REVIEW."""
-    router = ExecutionRouter()
-    review_every = router._config.review_every_n
-    rule = router.route(StepRole.EXECUTE, context={"cycle_number": review_every})
-    assert rule.role == StepRole.REVIEW
-
-
-def test_route_no_promotion_wrong_cycle():
-    router = ExecutionRouter()
-    review_every = router._config.review_every_n
-    rule = router.route(StepRole.EXECUTE, context={"cycle_number": review_every + 1})
-    assert rule.role == StepRole.EXECUTE
-
-
-# ---------------------------------------------------------------------------
-# execute() with MockBackend
+# execute()
 # ---------------------------------------------------------------------------
 
 
 def test_execute_success():
     router = make_router()
-    result = router.execute(StepRole.ORIENT, prompt="hello")
+    result = router.execute(prompt="hello", model="mock-model", engine="auto", tag="orient")
     assert result.ok
     assert "hello" in result.text
 
 
 def test_execute_accumulates_stats():
     router = make_router()
-    router.execute(StepRole.ORIENT, prompt="test prompt")
+    router.execute(prompt="test prompt", model="mock-model", engine="auto", tag="orient")
     stats = router.get_stats()
-    # Mock backend uses "mock-model"
     assert stats["budget_usd"] >= 0.0
-    # At least one model in stats
     assert len(stats) > 1  # budget_usd + at least one model
 
 
 def test_execute_tools_string():
     router = make_router()
-    result = router.execute(StepRole.EXECUTE, prompt="do it", tools="Bash,Read")
+    result = router.execute(
+        prompt="do it", model="mock-model", engine="auto", tools="Bash,Read", tag="execute"
+    )
     assert result.ok
 
 
 def test_execute_tools_list():
     router = make_router()
-    result = router.execute(StepRole.EXECUTE, prompt="do it", tools=["Bash", "Read"])
+    result = router.execute(
+        prompt="do it", model="mock-model", engine="auto", tools=["Bash", "Read"], tag="execute"
+    )
     assert result.ok
 
 
 def test_execute_timeout_override():
     router = make_router()
-    result = router.execute(StepRole.ORIENT, prompt="x", timeout_minutes=5)
+    result = router.execute(
+        prompt="x", model="mock-model", engine="auto", timeout_minutes=5, tag="orient"
+    )
     assert result.ok
 
 
-def test_execute_model_override():
+def test_execute_missing_backend_raises():
+    """If the engine maps to a backend we did not configure, execute raises."""
+    router = ExecutionRouter()  # no backends at all
+    with pytest.raises(RuntimeError):
+        router.execute(prompt="x", model="claude-sonnet-4-6", engine="claude", tag="orient")
+
+
+def test_execute_retry_models_chain():
+    """After a non-hang failure, the next model in the retry chain is tried."""
+    # We use the MOCK backend which replies "OK" to everything — so there's no
+    # failure to trigger the chain. Sanity-check that retry_models is accepted
+    # and the call returns cleanly.
     router = make_router()
-    # Override model — note: mock backend ignores model name
-    result = router.execute(StepRole.ORIENT, prompt="x", model="mock-override")
+    result = router.execute(
+        prompt="x",
+        model="mock-model",
+        engine="auto",
+        retry_models=["mock-fallback"],
+        retry_max=2,
+        tag="execute",
+    )
     assert result.ok
-
-
-def test_execute_engine_override_claude():
-    import contextlib
-    router = make_router()
-    # claude engine redirects to CLAUDE backend — not configured, expect RuntimeError
-    with contextlib.suppress(RuntimeError):
-        router.execute(StepRole.ORIENT, prompt="x", engine="claude")
 
 
 # ---------------------------------------------------------------------------
@@ -244,7 +229,7 @@ def test_get_stats_empty():
 
 def test_reset_stats():
     router = make_router()
-    router.execute(StepRole.ORIENT, prompt="x")
+    router.execute(prompt="x", model="mock-model", engine="auto", tag="orient")
     router.reset_stats()
     stats = router.get_stats()
     assert stats["budget_usd"] == 0.0
@@ -257,22 +242,26 @@ def test_reset_stats():
 
 
 def test_dry_run_with_mock_backend():
-    backends = {Backend.MOCK: BackendConfig(type=Backend.MOCK)}
-    config = DEFAULT_ROUTE_CONFIG.model_copy(deep=True)
-    for rule in config.rules:
-        rule.backend = Backend.MOCK
-        rule.retry_models = []
-
-    router = ExecutionRouter(config=config, backends=backends)
-    results = router.dry_run()
+    router = make_router()
+    targets = [
+        ("mock-model", "auto"),
+        ("another-mock", "auto"),
+    ]
+    results = router.dry_run(targets)
     assert isinstance(results, list)
     assert all(isinstance(t, tuple) and len(t) == 3 for t in results)
 
 
 def test_dry_run_no_backend_returns_false():
     router = ExecutionRouter()  # no backends configured
-    results = router.dry_run()
+    results = router.dry_run([("claude-haiku-4-5-20251001", "claude")])
     assert all(reachable is False for _, _, reachable in results)
+
+
+def test_dry_run_with_explicit_timeout():
+    router = make_router()
+    results = router.dry_run([("mock-model", "auto", 30)])
+    assert len(results) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -281,14 +270,12 @@ def test_dry_run_no_backend_returns_false():
 
 
 def test_heartbeat_watcher_context_manager():
-    # Should not raise
     with _HeartbeatWatcher(step_name="test", interval=10000):
-        pass  # enters and exits immediately
+        pass
 
 
 def test_heartbeat_watcher_stop():
     watcher = _HeartbeatWatcher(step_name="test", interval=10000)
     watcher.__enter__()
     watcher.__exit__(None, None, None)
-    # Thread should be stopped
     assert watcher._stop.is_set()

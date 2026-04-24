@@ -188,12 +188,17 @@ class SubagentResult:
     """Actual output tokens reported by the model (0 if not available)."""
     files_accessed: list[str] = field(default_factory=list)
     """Files read/written by tool calls during this step."""
+    auth_failed_snippet: str = ""
+    """Literal opencode error line when OAuth/provider auth failed.
+    Empty when no auth failure was detected. Set by OpencodeBackend.run."""
 
     def __post_init__(self) -> None:
         self.token_estimate = max(1, len(self.text) // 4)
 
     @property
     def ok(self) -> bool:
+        if self.auth_failed:
+            return False
         return self.exit_code == 0
 
     @property
@@ -203,6 +208,10 @@ class SubagentResult:
     @property
     def rate_limited(self) -> bool:
         return self.rate_limit_snippet != ""
+
+    @property
+    def auth_failed(self) -> bool:
+        return self.auth_failed_snippet != ""
 
     @property
     def rate_limit_snippet(self) -> str:
@@ -312,6 +321,12 @@ def _seed_opencode_auth(xdg_tmp: str) -> None:
     each call with an isolated temporary ``XDG_DATA_HOME`` to avoid sqlite lock
     contention, so we opportunistically merge any persistent auth.json files
     into the temp directory. Missing or malformed files are ignored.
+
+    Per-provider merge strategy: for each provider key (openai, anthropic, ...)
+    pick the candidate with the LATEST ``expires`` for OAuth entries. Non-OAuth
+    entries (api-key) use last-seen wins. Prevents a stale ``~/.local/share``
+    refresh token from clobbering a fresh snap-stored one just because it
+    happens to sort later.
     """
     candidates: list[Path] = []
 
@@ -325,7 +340,11 @@ def _seed_opencode_auth(xdg_tmp: str) -> None:
     for snap_root in snap_roots:
         if not snap_root.exists():
             continue
-        snap_auths = sorted(snap_root.glob("*/opencode/auth.json"), reverse=True)
+        # Snap paths look like ~/snap/code/<rev>/.local/share/opencode/auth.json
+        # (not ~/snap/code/<rev>/opencode/auth.json) — match the real layout.
+        snap_auths = sorted(
+            snap_root.glob("*/.local/share/opencode/auth.json"), reverse=True
+        )
         candidates.extend(snap_auths)
 
     merged: dict[str, Any] = {}
@@ -336,8 +355,12 @@ def _seed_opencode_auth(xdg_tmp: str) -> None:
             data = json.loads(path.read_text())
         except (OSError, json.JSONDecodeError):
             continue
-        if isinstance(data, dict):
-            merged.update(data)
+        if not isinstance(data, dict):
+            continue
+        for key, value in data.items():
+            incumbent = merged.get(key)
+            if _is_fresher_auth(incumbent, value):
+                merged[key] = value
 
     if not merged:
         return
@@ -345,6 +368,59 @@ def _seed_opencode_auth(xdg_tmp: str) -> None:
     auth_dir = Path(xdg_tmp) / "opencode"
     auth_dir.mkdir(parents=True, exist_ok=True)
     (auth_dir / "auth.json").write_text(json.dumps(merged), encoding="utf-8")
+
+
+def _is_fresher_auth(incumbent: Any, candidate: Any) -> bool:
+    """Return True when ``candidate`` should replace ``incumbent`` in the merge.
+
+    For OAuth entries (both sides have ``expires``) prefer the later expiry.
+    For anything else (api-keys, missing incumbent) fall back to last-seen wins.
+    """
+    if incumbent is None:
+        return True
+    if not (isinstance(incumbent, dict) and isinstance(candidate, dict)):
+        return True
+    inc_exp = incumbent.get("expires")
+    cand_exp = candidate.get("expires")
+    if isinstance(inc_exp, (int, float)) and isinstance(cand_exp, (int, float)):
+        return cand_exp > inc_exp
+    return True
+
+
+# Unambiguous auth-failure markers emitted by opencode on OAuth refresh /
+# provider 401 / 403. Scanned against both stdout (``text``) and the raw
+# subprocess output. Kept short and specific — a stray "401" in a scan result
+# should not detonate the loop.
+_AUTH_FAILURE_MARKERS: tuple[str, ...] = (
+    "Token refresh failed",
+    '"statusCode":401',
+    '"statusCode":403',
+    '"message":"Unauthorized"',
+    '"message":"Forbidden"',
+    '"name":"AuthError"',
+)
+
+
+def _detect_auth_failure(text: str, raw: bytes) -> str:
+    """Return a short error message if opencode output indicates an auth failure.
+
+    Returns empty string when no auth failure is detected. Matching is literal
+    and limited to the narrow set of markers above to avoid false positives.
+    """
+    haystack = (text or "") + "\n" + raw.decode(errors="replace")
+    for marker in _AUTH_FAILURE_MARKERS:
+        idx = haystack.find(marker)
+        if idx == -1:
+            continue
+        line_start = haystack.rfind("\n", 0, idx) + 1
+        line_end = haystack.find("\n", idx)
+        if line_end == -1:
+            line_end = len(haystack)
+        snippet = haystack[line_start:line_end].strip()
+        if len(snippet) > 400:
+            snippet = snippet[:400] + "…"
+        return snippet
+    return ""
 
 
 def wrap_cmd(
@@ -1036,6 +1112,7 @@ class OpenCodeBackend:
 
             text = self._extract_text(sr.raw)
             in_tok, out_tok, files = _extract_stream_stats(sr.raw)
+            auth_snippet = _detect_auth_failure(text, sr.raw)
 
             return SubagentResult(
                 text=text,
@@ -1049,6 +1126,7 @@ class OpenCodeBackend:
                 input_tokens=in_tok,
                 output_tokens=out_tok,
                 files_accessed=files,
+                auth_failed_snippet=auth_snippet,
             )
         finally:
             if xdg_tmp is not None:

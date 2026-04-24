@@ -49,6 +49,13 @@ AVAILABLE_BACKENDS = ["claude", "opencode", "openrouter", "direct_api"]
 # Steps that can be added (optional steps not in default pipeline)
 OPTIONAL_STEPS = ["adversarial", "validate", "lean_retry"]
 
+# Model used by the meta-agent to suggest intelligent mutations. No role
+# indirection — caller names the model directly (opus-class is the right
+# default; override per project if you want it cheaper).
+META_REVIEW_MODEL = "claude-opus-4-6"
+META_REVIEW_ENGINE = "claude"
+META_REVIEW_TIMEOUT_MINUTES = 45
+
 
 def mutate(
     parent: AgentVariant,
@@ -208,12 +215,16 @@ If timeouts are frequent, increase timeout or switch to faster models.
 
     try:
         from langywrap.router.backends import SubagentResult
-        from langywrap.router.config import StepRole
 
+        # Meta-reasoning: pick the most capable model we know about and dispatch
+        # directly. The former StepRole.REVIEW routing rule is gone — callers
+        # that need "the expensive model" name it here.
         result: SubagentResult = router.execute(
-            role=StepRole.REVIEW,  # Use expensive model for meta-reasoning
             prompt=prompt,
-            context={"cycle_type": "meta", "cycle_number": parent.generation},
+            model=META_REVIEW_MODEL,
+            engine=META_REVIEW_ENGINE,
+            timeout_minutes=META_REVIEW_TIMEOUT_MINUTES,
+            tag="hyperagents.meta_review",
         )
 
         child_config = copy.deepcopy(parent.config)

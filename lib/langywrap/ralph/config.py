@@ -6,31 +6,11 @@ Declarative pipeline definition: steps, quality gates, git policy, and budget.
 
 from __future__ import annotations
 
-from enum import Enum
 from pathlib import Path
 from typing import Any
 
 import yaml
 from pydantic import BaseModel, Field
-
-# ---------------------------------------------------------------------------
-# StepRole — defined here; router will import from this module or redefine.
-# Using a canonical definition here avoids circular import issues when the
-# router module is not yet available.
-# ---------------------------------------------------------------------------
-
-
-class StepRole(str, Enum):
-    """Logical role of a pipeline step, used by ExecutionRouter for model routing."""
-
-    ORIENT = "orient"
-    PLAN = "plan"
-    EXECUTE = "execute"
-    CRITIC = "critic"
-    FINALIZE = "finalize"
-    REVIEW = "review"
-    GENERIC = "generic"
-
 
 # ---------------------------------------------------------------------------
 # StepConfig
@@ -46,11 +26,16 @@ class StepConfig(BaseModel):
     prompt_template: Path
     """Path to the .md prompt template for this step."""
 
-    role: StepRole = StepRole.GENERIC
-    """Logical role — passed to ExecutionRouter for model selection."""
-
     timeout_minutes: int = 30
     """Hard wall-clock timeout for this step."""
+
+    retry_models: list[str] = Field(default_factory=list)
+    """Fallback model chain. If the primary model fails, the dispatcher tries
+    these in order. Populated by the pipeline DSL from ``Step.fallback`` and
+    ``Retry.fallback``."""
+
+    retry_max: int = 2
+    """Maximum total attempts across all models in ``retry_models``."""
 
     confirmation_token: str = ""
     """Token that MUST appear in step output to be considered successful.
@@ -140,6 +125,21 @@ class StepConfig(BaseModel):
     Only opt in on steps where structural context pays off — typically
     ``orient`` (planning) and ``critic`` (impact review). Execute-phase
     enrichment is usually wasted tokens (grep+read beats graphs there)."""
+
+    # -- Explicit role flags (replace former step.name magic) ----------------
+
+    validates_plan: bool = False
+    """After this step runs, validate ``plan.md`` against
+    ``RalphConfig.plan_must_contain`` / ``plan_must_match`` /
+    ``plan_require_current_cycle``. Set on the step that writes plan.md."""
+
+    primary: bool = False
+    """This step is the primary execute step. Used for peak-hour throttle
+    backend inference."""
+
+    includes_orient_context: bool = False
+    """If True, prefix the prompt with the compact orient_context block
+    (recent cycles summary + tasks.md head)."""
 
 
 # ---------------------------------------------------------------------------
@@ -299,11 +299,18 @@ class RalphConfig(BaseModel):
     # -- Cycle type detection ------------------------------------------------
 
     cycle_type_rules: list[dict[str, str]] = Field(default_factory=list)
-    """Rules for classifying cycles based on plan.md content.
+    """Rules for classifying cycles based on a source step's output.
     Each dict: {"name": "lean", "pattern": "sorry.*fill|lean formali"}
     Last matching rule wins. Used to set cycle_type which gates conditional
     steps via step.run_if_cycle_types. Pattern is case-insensitive regex
-    matched against plan.md content."""
+    matched against the source step's output (see ``cycle_type_source``)."""
+
+    cycle_type_source: str = "plan"
+    """Step name whose output drives cycle type detection. Defaults to
+    'plan' for backward compatibility. Set to 'orient' to let the orient
+    step's output decide the type so that branched plan steps can be
+    gated by it. Detection runs immediately after the source step
+    completes successfully."""
 
     plan_must_contain: list[str] = Field(default_factory=list)
     """Literal substrings that must appear in plan.md after the orient/plan step.
@@ -368,31 +375,30 @@ DEFAULT_STEPS: list[StepConfig] = [
     StepConfig(
         name="orient",
         prompt_template=_PROMPTS_PLACEHOLDER / "step1_orient.md",
-        role=StepRole.ORIENT,
         timeout_minutes=20,
         confirmation_token="ORIENT_CONFIRMED:",
         depends_on=[],
+        includes_orient_context=True,
     ),
     StepConfig(
         name="plan",
         prompt_template=_PROMPTS_PLACEHOLDER / "step2_plan.md",
-        role=StepRole.PLAN,
         timeout_minutes=20,
         confirmation_token="PLAN_CONFIRMED:",
         depends_on=["ORIENT_CONFIRMED:"],
+        validates_plan=True,
     ),
     StepConfig(
         name="execute",
         prompt_template=_PROMPTS_PLACEHOLDER / "step3_execute.md",
-        role=StepRole.EXECUTE,
         timeout_minutes=120,
         confirmation_token="EXECUTE_CONFIRMED:",
         depends_on=["PLAN_CONFIRMED:"],
+        primary=True,
     ),
     StepConfig(
         name="critic",
         prompt_template=_PROMPTS_PLACEHOLDER / "step3c_critic.md",
-        role=StepRole.CRITIC,
         timeout_minutes=45,
         confirmation_token="CRITIC_CONFIRMED:",
         depends_on=["EXECUTE_CONFIRMED:"],
@@ -400,7 +406,6 @@ DEFAULT_STEPS: list[StepConfig] = [
     StepConfig(
         name="finalize",
         prompt_template=_PROMPTS_PLACEHOLDER / "step4_finalize.md",
-        role=StepRole.FINALIZE,
         timeout_minutes=30,
         confirmation_token="FINALIZE_CONFIRMED:",
         depends_on=["CRITIC_CONFIRMED:"],

@@ -39,6 +39,11 @@ class Skill(BaseModel):
 class SkillLibrary:
     """Manages the skill catalog with utility-based selection and evolution."""
 
+    # Defaults for the reflect-write loop; override on the instance to change.
+    reflect_model: str = "claude-haiku-4-5-20251001"
+    reflect_engine: str = "claude"
+    reflect_timeout_minutes: int = 10
+
     def __init__(self, library_dir: Path) -> None:
         self.library_dir = Path(library_dir)
         self.library_dir.mkdir(parents=True, exist_ok=True)
@@ -143,8 +148,6 @@ class SkillLibrary:
 
         Uses a cheap model via the router to analyze.
         """
-        from langywrap.router.config import StepRole
-
         existing_skills = [
             {"name": s.name, "description": s.description, "utility": s.utility_score}
             for s in self.get_by_utility(min_score=0.0, n=20)
@@ -178,10 +181,15 @@ Be selective — only create skills for genuinely reusable patterns, not one-off
 """
 
         try:
+            # Reflect-write runs on a cheap model — Haiku via Claude Code.
+            # Callers can override ``SkillLibrary.reflect_model`` if they want
+            # a different default per-project.
             result = router.execute(
-                role=StepRole.FINALIZE,  # Use cheap model
                 prompt=prompt,
-                context={"cycle_type": "reflect"},
+                model=self.reflect_model,
+                engine=self.reflect_engine,
+                timeout_minutes=self.reflect_timeout_minutes,
+                tag="hyperagents.skills.reflect",
             )
             return self._parse_skill_output(result.text)
         except Exception:

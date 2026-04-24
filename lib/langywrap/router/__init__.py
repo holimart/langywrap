@@ -1,39 +1,25 @@
 """
-langywrap.router — ExecutionRouter: AI backend routing for Ralph-pattern loops.
+langywrap.router — ExecutionRouter: pure backend dispatcher.
 
-Routes workflow steps (orient, plan, execute, critic, finalize, review, …) to
-different AI backends (claude CLI, opencode CLI, OpenRouter API, direct API)
-with configurable model selection per step role, retry/fallback chains,
-peak-hour throttling, and HyperAgent-driven config evolution.
+Runs a prompt on a (model, engine) pair with retries, hang detection,
+rate-limit backoff, and peak-hour throttling. Routing decisions — which
+model, which engine, what timeout — live on the pipeline's ``Step`` objects
+and are passed to ``execute()`` directly. There is no RouteConfig/RouteRule
+indirection.
 
 Public API
 ----------
-ExecutionRouter   — central dispatch; routes steps and handles retries
-RouteConfig       — routing configuration (rules, timeouts, backends)
-RouteRule         — a single role→model→backend routing rule
-StepRole          — enum of step roles (orient, plan, execute, …)
+ExecutionRouter   — backend dispatcher
 Backend           — enum of backend types (CLAUDE, OPENCODE, OPENROUTER, …)
 BackendConfig     — per-backend configuration (binary path, auth, timeouts)
 SubagentResult    — result from a backend run() call
-ModelTier         — cost tier enum (CHEAP, MID, EXPENSIVE)
-RouteEvolver      — HyperAgent-driven RouteConfig evolution
-RouteConfigVariant— versioned config with fitness score and mutation history
-
-Utility functions
------------------
-load_route_config(project_dir)  — load from .langywrap/router.yaml
-save_route_config(config, dir)  — persist config to .langywrap/router.yaml
-DEFAULT_ROUTE_CONFIG            — built-in default (crunchdaoobesity pattern)
+StepEvolver       — pipeline-variant evolution
+PipelineVariant   — versioned pipeline with fitness score + mutation history
 
 Example
 -------
-    from pathlib import Path
-    from langywrap.router import (
-        ExecutionRouter, Backend, BackendConfig, StepRole,
-        load_route_config,
-    )
+    from langywrap.router import ExecutionRouter, Backend, BackendConfig
 
-    config = load_route_config(Path("/my/project"))
     backends = {
         Backend.CLAUDE: BackendConfig(type=Backend.CLAUDE),
         Backend.OPENROUTER: BackendConfig(
@@ -41,8 +27,14 @@ Example
             api_key_source="OPENROUTER_API_KEY",
         ),
     }
-    router = ExecutionRouter(config, backends)
-    result = router.execute(StepRole.ORIENT, prompt, context={"cycle_number": 1})
+    router = ExecutionRouter(backends=backends)
+    result = router.execute(
+        prompt="...",
+        model="claude-haiku-4-5-20251001",
+        engine="claude",
+        timeout_minutes=15,
+        tag="orient",
+    )
     print(result.text)
 """
 
@@ -59,29 +51,12 @@ from .backends import (
     ThinkingLoopBackendConfig,
     create_backend,
 )
-from .config import (
-    DEFAULT_ROUTE_CONFIG,
-    ModelTier,
-    RouteConfig,
-    RouteRule,
-    StepRole,
-    load_route_config,
-    save_route_config,
-)
-from .evolution import RouteConfigVariant, RouteEvolver
+from .evolution import PipelineVariant, StepEvolver
 from .router import ExecutionRouter
 
 __all__ = [
     # Core router
     "ExecutionRouter",
-    # Config models
-    "RouteConfig",
-    "RouteRule",
-    "StepRole",
-    "ModelTier",
-    "DEFAULT_ROUTE_CONFIG",
-    "load_route_config",
-    "save_route_config",
     # Backend models
     "Backend",
     "BackendConfig",
@@ -96,6 +71,6 @@ __all__ = [
     "ThinkingLoopBackendConfig",
     "create_backend",
     # Evolution
-    "RouteEvolver",
-    "RouteConfigVariant",
+    "StepEvolver",
+    "PipelineVariant",
 ]

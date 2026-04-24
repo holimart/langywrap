@@ -5,8 +5,9 @@ Define ralph loops as Python classes with typed Pydantic models instead of YAML.
 Each pipeline is a Module subclass with step definitions as class attributes
 and a ``forward()`` method defining the execution flow.
 
-The pipeline objects bridge to the existing RalphConfig/StepConfig/RouteConfig
-models used by the runner — zero runtime changes needed.
+The pipeline objects bridge to the RalphConfig/StepConfig used by the
+runner; model+engine+timeout live on each Step directly and are handed to
+``ExecutionRouter.execute()`` at run time. There is no separate RouteConfig.
 
 Example::
 
@@ -289,6 +290,29 @@ class Step(BaseModel):
     no-op, so pipelines are safe on repos without graphify installed.
     HyperAgent genome includes this list — evolution can toggle per role."""
 
+    # -- Explicit role flags (replace former step.name magic) ----------------
+    #
+    # The runner historically inferred behavior from `step.name` — e.g. a step
+    # named "orient" got orient-context injection, "execute" was picked for
+    # peak-hour backend inference, and "orient"/"plan" triggered plan.md
+    # validation. Name-based magic is gone: projects opt in via these flags.
+
+    validates_plan: bool = False
+    """After this step runs, validate ``plan.md`` against
+    ``Pipeline.plan_must_contain`` / ``plan_must_match`` / ``plan_require_current_cycle``.
+    Set on the step that writes plan.md (typically the plan step)."""
+
+    primary: bool = False
+    """This step is the primary execute step. Used for peak-hour throttle
+    backend inference (``throttle_skip_backends``). Exactly one step per
+    pipeline should set this; if none do, throttling treats every backend
+    as non-primary (no skip)."""
+
+    includes_orient_context: bool = False
+    """If True, the step's prompt is prefixed with the compact orient_context
+    block (recent cycles summary + tasks.md head). Set this on the step
+    whose prompt expects the context (typically the orient step)."""
+
     def __init__(self, name: str = "", **kwargs: Any) -> None:
         if "token" in kwargs and "confirmation_token" not in kwargs:
             kwargs["confirmation_token"] = kwargs.pop("token")
@@ -517,6 +541,7 @@ class Pipeline(BaseModel):
 
         step_configs: list[StepConfig] = []
         cycle_type_rules: list[dict[str, str]] = []
+        cycle_type_source: str = "plan"
         adversarial_step_name = ""
         adversarial_every_n: int | None = None
         adversarial_milestone_patterns: list[str] = []
@@ -541,10 +566,13 @@ class Pipeline(BaseModel):
 
             # Cycle type detection
             if step.detects_cycle:
+                # Match.source names the step whose output is matched.
+                # Default 'plan' preserves legacy behaviour; 'orient' lets
+                # branched plan steps gate on cycle type.
+                if step.detects_cycle.source:
+                    cycle_type_source = step.detects_cycle.source
                 for name, pattern in step.detects_cycle.rules.items():
                     rule: dict[str, str] = {"name": name, "pattern": pattern}
-                    # Check per_cycle overrides on the NEXT execute step
-                    # (cycle types affect execute, detected from plan)
                     cycle_type_rules.append(rule)
 
             # Collect per_cycle overrides into cycle_type_rules
@@ -673,62 +701,12 @@ class Pipeline(BaseModel):
             throttle_weekdays_only=throttle_weekdays,
             throttle_skip_backends=self.throttle_skip_backends,
             cycle_type_rules=cycle_type_rules,
+            cycle_type_source=cycle_type_source,
             plan_must_contain=self.plan_must_contain,
             plan_must_match=self.plan_must_match,
             plan_require_current_cycle=self.plan_require_current_cycle,
             tasks_file=Path(self.tasks_file) if self.tasks_file else None,
             progress_file=Path(self.progress_file) if self.progress_file else None,
-        )
-
-    # -----------------------------------------------------------------------
-    # RouteConfig generation (for ExecutionRouter)
-    # -----------------------------------------------------------------------
-
-    def to_route_config(self, project_dir: Path) -> RouteConfig | None:  # noqa: F821
-        """Build a RouteConfig from step model definitions.
-
-        Returns None if the router module is not available.
-        """
-        try:
-            from langywrap.router.config import (
-                Backend,
-                RouteConfig,
-                RouteRule,
-            )
-        except ImportError:
-            return None
-
-        rules: list[RouteRule] = []
-        seen_roles: set[str] = set()
-
-        for item in self.steps:
-            if isinstance(item, Loop):
-                for inner in item.steps:
-                    if isinstance(inner, Step):
-                        rule = self._step_to_route_rule(inner, seen_roles)
-                        if rule:
-                            rules.append(rule)
-                continue
-            if isinstance(item, Step):
-                rule = self._step_to_route_rule(item, seen_roles)
-                if rule:
-                    rules.append(rule)
-
-        # Periodic steps (adversarial, etc.)
-        for p in self.periodic:
-            if p.step:
-                rule = self._step_to_route_rule(p.step, seen_roles)
-                if rule:
-                    rules.append(rule)
-
-        if not rules:
-            return None
-
-        return RouteConfig(
-            name=f"pipeline-{project_dir.name}",
-            description=f"Auto-generated from Pipeline for {project_dir.name}",
-            rules=rules,
-            default_backend=Backend.CLAUDE,
         )
 
     # -----------------------------------------------------------------------
@@ -851,7 +829,6 @@ class Pipeline(BaseModel):
 
         resolve = lambda name: _resolve_model(name, self.aliases)  # noqa: E731
         model_id = resolve(step.model)
-        role = _infer_role(step.name)
 
         # Resolve prompt template path
         prompt_path = prompts_dir / step.prompt if step.prompt else prompts_dir / f"{step.name}.md"
@@ -886,17 +863,26 @@ class Pipeline(BaseModel):
             retry_count = 1
             retry_model = resolve(step.fallback)
 
+        # Build the dispatcher fallback chain (Step.fallback + Retry.fallback).
+        retry_chain: list[str] = []
+        if step.fallback:
+            retry_chain.append(resolve(step.fallback))
+        if step.retry and step.retry.fallback:
+            fb = resolve(step.retry.fallback)
+            if fb not in retry_chain:
+                retry_chain.append(fb)
+
         tools = ",".join(step.tools) if step.tools else "Read,Write,Edit,Glob,Grep,Bash"
 
         return StepConfig(
             name=step.name,
             prompt_template=prompt_path,
-            role=role,
             timeout_minutes=step.timeout,
             confirmation_token=step.confirmation_token,
             model=model_id,
             tools=tools,
             engine=step.engine,
+            retry_models=retry_chain,
             run_if_step=run_if_step,
             run_if_pattern=run_if_pattern,
             run_if_cycle_types=step.when_cycle,
@@ -911,6 +897,9 @@ class Pipeline(BaseModel):
             pipeline=step.pipeline,
             every_n=step.every,
             enrich=list(step.enrich),
+            validates_plan=step.validates_plan,
+            primary=step.primary,
+            includes_orient_context=step.includes_orient_context,
         )
 
     def _loop_to_step_configs(self, loop: Loop, prompts_dir: Path) -> list[StepConfig]:  # noqa: F821
@@ -928,87 +917,6 @@ class Pipeline(BaseModel):
                 sc = self._step_to_step_config(inner, prompts_dir)
                 configs.append(sc)
         return configs
-
-    def _step_to_route_rule(self, step: Step, seen: set[str]) -> RouteRule | None:  # noqa: F821
-        """Convert a Step to a RouteRule for the ExecutionRouter."""
-        try:
-            from langywrap.router.config import (
-                Backend,
-                RouteRule,
-            )
-            from langywrap.router.config import (
-                StepRole as RouterStepRole,
-            )
-        except ImportError:
-            return None
-
-        # Map step name to router role
-        try:
-            role = RouterStepRole(step.name)
-        except ValueError:
-            return None
-
-        if role.value in seen:
-            return None
-        seen.add(role.value)
-
-        resolve = lambda name: _resolve_model(name, self.aliases)  # noqa: E731
-        model_id = resolve(step.model)
-        if step.engine and step.engine != "auto":
-            backend = Backend(step.engine)
-        else:
-            backend = Backend(_infer_backend(model_id))
-
-        # Build retry models from fallback chain
-        retry_models: list[str] = []
-        if step.fallback:
-            retry_models.append(resolve(step.fallback))
-        if step.retry and step.retry.fallback:
-            fb = resolve(step.retry.fallback)
-            if fb not in retry_models:
-                retry_models.append(fb)
-        # Default fallback to sonnet if not already sonnet
-        if not retry_models and model_id != resolve("sonnet"):
-            retry_models = [resolve("sonnet")]
-
-        return RouteRule(
-            role=role,
-            model=model_id,
-            backend=backend,
-            retry_models=retry_models,
-            retry_max=2,
-            timeout_minutes=step.timeout,
-        )
-
-
-# ---------------------------------------------------------------------------
-# Role inference
-# ---------------------------------------------------------------------------
-
-_ROLE_ALIASES: dict[str, StepRole] = {}  # noqa: F821
-
-
-def _infer_role(name: str) -> StepRole:  # noqa: F821
-    """Infer StepRole from step name."""
-    from langywrap.ralph.config import StepRole
-
-    # Lazy init aliases
-    if not _ROLE_ALIASES:
-        _ROLE_ALIASES.update(
-            {
-                "validate": StepRole.CRITIC,
-                "adversarial": StepRole.CRITIC,
-                "review": StepRole.REVIEW,
-            }
-        )
-
-    name_lower = name.lower()
-    if name_lower in _ROLE_ALIASES:
-        return _ROLE_ALIASES[name_lower]
-    for role in StepRole:
-        if role.value in name_lower:
-            return role
-    return StepRole.GENERIC
 
 
 # ---------------------------------------------------------------------------

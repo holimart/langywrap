@@ -83,6 +83,14 @@ class CycleResult:
     rate_limited: bool = False
     """True if any step returned a rate-limit response this cycle."""
 
+    auth_failed: bool = False
+    """True if any step returned a provider-auth failure (e.g. opencode OAuth
+    refresh 401). Terminal — the loop should stop immediately without retries."""
+
+    auth_failed_snippet: str = ""
+    """Literal snippet captured from the failing step's output. Empty unless
+    ``auth_failed`` is True."""
+
     input_tokens: int = 0
     """Total input tokens across all steps this cycle."""
     output_tokens: int = 0
@@ -139,10 +147,12 @@ class RalphState:
             return []
         text = self.tasks_file.read_text(encoding="utf-8")
         tasks: list[TaskEntry] = []
-        for line in text.splitlines():
+        lines = text.splitlines()
+        for line in lines:
             entry = self._parse_task_line(line)
             if entry is not None:
                 tasks.append(entry)
+        tasks.extend(entry for _, _, entry in self._parse_heading_task_blocks(lines))
         return tasks
 
     def save_tasks(self, tasks: list[TaskEntry]) -> None:
@@ -178,37 +188,52 @@ class RalphState:
             return False
         text = self.tasks_file.read_text(encoding="utf-8")
         lines = text.splitlines(keepends=True)
-        found = False
-        new_lines: list[str] = []
-        for line in lines:
+
+        for idx, line in enumerate(lines):
             entry = self._parse_task_line(line.rstrip("\n"))
-            if entry is not None and entry.id == task_id and not found:
+            if entry is not None and entry.id == task_id:
                 new_line = re.sub(
                     r"^(\s*-\s*\[)[ x](\])",
                     r"\g<1>x\2",
                     line.rstrip("\n"),
                 )
-                # Append cycle annotation if not already present
                 if f"(cycle {cycle_num})" not in new_line:
                     new_line = new_line.rstrip() + f" (cycle {cycle_num})"
-                new_lines.append(new_line + "\n")
-                found = True
-            else:
-                new_lines.append(line if line.endswith("\n") else line + "\n")
-        if found:
-            self.tasks_file.write_text("".join(new_lines), encoding="utf-8")
-        return found
+                lines[idx] = new_line + "\n"
+                self.tasks_file.write_text("".join(lines), encoding="utf-8")
+                return True
 
-    _UNCHECKED_RE = re.compile(
-        r"^\s*(?:-|#{1,6})\s*\[ \]", re.MULTILINE
-    )
+        plain_lines = [line.rstrip("\n") for line in lines]
+        for start, end, entry in self._parse_heading_task_blocks(plain_lines):
+            if entry.id != task_id:
+                continue
+
+            for idx in range(start + 1, end):
+                if "**Status:**" in plain_lines[idx]:
+                    status_line = re.sub(
+                        r"(\*\*Status:\*\*\s*).*$",
+                        rf"\1✅ **COMPLETED** (cycle {cycle_num})",
+                        plain_lines[idx],
+                    )
+                    lines[idx] = status_line + "\n"
+                    self.tasks_file.write_text("".join(lines), encoding="utf-8")
+                    return True
+
+        return False
+
+    _UNCHECKED_RE = re.compile(r"^\s*(?:-|#{1,6})\s*\[ \]", re.MULTILINE)
 
     def pending_count(self) -> int:
         """Count unchecked `- [ ]` or `### [ ]` lines in tasks.md."""
         if not self.tasks_file.exists():
             return 0
         text = self.tasks_file.read_text(encoding="utf-8")
-        return len(self._UNCHECKED_RE.findall(text))
+        lines = text.splitlines()
+        checkbox_pending = len(self._UNCHECKED_RE.findall(text))
+        heading_pending = sum(
+            1 for _, _, entry in self._parse_heading_task_blocks(lines) if entry.is_pending
+        )
+        return checkbox_pending + heading_pending
 
     # ------------------------------------------------------------------
     # Cycle counter
@@ -300,7 +325,9 @@ class RalphState:
 
         if template:
             task_block = template.format(
-                cycle=cycle_num, date=today, quality_gate_cmd=qg,
+                cycle=cycle_num,
+                date=today,
+                quality_gate_cmd=qg,
             )
         else:
             task_block = (
@@ -509,6 +536,80 @@ class RalphState:
         )
 
     @staticmethod
+    def _parse_heading_task_blocks(lines: list[str]) -> list[tuple[int, int, TaskEntry]]:
+        """Parse heading-style task blocks used by research queues.
+
+        Supported format:
+        `### **[P1-R] task:foo**`
+        followed by a `**Status:** OPEN|PENDING|...` line.
+        """
+        result: list[tuple[int, int, TaskEntry]] = []
+        total = len(lines)
+        i = 0
+
+        while i < total:
+            line = lines[i]
+            if not re.match(r"^\s*#{1,6}\s+", line):
+                i += 1
+                continue
+
+            task_match = re.search(r"(task:[A-Za-z0-9._-]+)", line)
+            if not task_match:
+                i += 1
+                continue
+
+            end = i + 1
+            while end < total:
+                if re.match(r"^\s*---\s*$", lines[end]):
+                    break
+                if end > i and re.match(r"^\s*#{1,6}\s+", lines[end]):
+                    break
+                end += 1
+
+            status = TaskStatus.PENDING
+            status_line = ""
+            for j in range(i + 1, min(end, i + 8)):
+                if "**Status:**" in lines[j]:
+                    status_line = lines[j]
+                    break
+
+            normalized_status = status_line.upper()
+            if (
+                "COMPLETED" in normalized_status
+                or "RESOLVED" in normalized_status
+                or "CLOSED" in normalized_status
+                or "INVALIDATED" in normalized_status
+                or "~~" in line
+            ):
+                status = TaskStatus.COMPLETED
+            elif "IN PROGRESS" in normalized_status or "IN_PROGRESS" in normalized_status:
+                status = TaskStatus.IN_PROGRESS
+            elif (
+                "OPEN" in normalized_status
+                or "PENDING" in normalized_status
+                or "ACTIVE" in normalized_status
+                or "PARTIAL" in normalized_status
+                or status_line == ""
+            ):
+                status = TaskStatus.PENDING
+
+            result.append(
+                (
+                    i,
+                    end,
+                    TaskEntry(
+                        id=task_match.group(1),
+                        title=line.strip(),
+                        status=status,
+                        raw_line=line,
+                    ),
+                )
+            )
+            i = end + 1 if end < total and re.match(r"^\s*---\s*$", lines[end]) else end
+
+        return result
+
+    @staticmethod
     def _extract_pending_blocks(lines: list[str], context_lines: int = 12) -> list[str]:
         """For each unchecked checkbox line, extract a block of context around it."""
         total = len(lines)
@@ -517,6 +618,10 @@ class RalphState:
             if re.match(r"^\s*(?:-|#{1,6})\s*\[ \]", line):
                 start = max(0, i - 2)
                 end = min(total, i + context_lines)
+                result.extend(lines[start:end])
+                result.append("")
+        for start, end, entry in RalphState._parse_heading_task_blocks(lines):
+            if entry.is_pending:
                 result.extend(lines[start:end])
                 result.append("")
         return result

@@ -298,91 +298,56 @@ class TestMockInRouter:
     """Verify MockBackend works as a drop-in backend in ExecutionRouter."""
 
     def test_router_with_mock_backend(self, tmp_path: Path) -> None:
-        from langywrap.router.config import RouteConfig, RouteRule, StepRole
         from langywrap.router.router import ExecutionRouter
 
-        # Create a config that routes everything through mock
-        rules = [
-            RouteRule(
-                role=StepRole.ORIENT,
-                model="mock-haiku",
-                backend=Backend.MOCK,
-                timeout_minutes=1,
-            ),
-            RouteRule(
-                role=StepRole.EXECUTE,
-                model="mock-kimi",
-                backend=Backend.MOCK,
-                timeout_minutes=1,
-            ),
-        ]
-        config = RouteConfig(name="test", rules=rules)
         backends = {
             Backend.MOCK: BackendConfig(
                 type=Backend.MOCK,
                 env_overrides={"MOCK_RESPONSE": "Mock LLM output"},
             ),
         }
-
-        router = ExecutionRouter(config, backends)
+        router = ExecutionRouter(backends=backends, default_backend=Backend.MOCK)
         result = router.execute(
-            StepRole.ORIENT,
-            "What should we work on?",
-            context={"cycle_number": 1},
+            prompt="What should we work on?",
+            model="mock-haiku",
+            engine="auto",
+            timeout_minutes=1,
+            tag="orient",
         )
         assert result.ok
         assert "Mock LLM output" in result.text
         assert result.backend_used == Backend.MOCK
 
     def test_router_mock_stats(self, tmp_path: Path) -> None:
-        from langywrap.router.config import RouteConfig, RouteRule, StepRole
         from langywrap.router.router import ExecutionRouter
 
-        config = RouteConfig(
-            name="stats-test",
-            rules=[
-                RouteRule(
-                    role=StepRole.ORIENT, model="mock-v1", backend=Backend.MOCK, timeout_minutes=1
-                ),
-            ],
-        )
         backends = {
             Backend.MOCK: BackendConfig(type=Backend.MOCK, env_overrides={"MOCK_RESPONSE": "ok"}),
         }
-        router = ExecutionRouter(config, backends)
+        router = ExecutionRouter(backends=backends, default_backend=Backend.MOCK)
 
-        # Run 3 calls
         for _ in range(3):
-            router.execute(StepRole.ORIENT, "test", context={"cycle_number": 1})
+            router.execute(
+                prompt="test", model="mock-v1", engine="auto", timeout_minutes=1, tag="orient"
+            )
 
         stats = router.get_stats()
-        # Stats keyed by model name
         assert "mock-v1" in stats
         assert stats["mock-v1"]["calls"] == 3
         assert stats["mock-v1"]["tokens"] > 0
 
     def test_router_dry_run_with_mock(self) -> None:
-        from langywrap.router.config import RouteConfig, RouteRule, StepRole
         from langywrap.router.router import ExecutionRouter
 
-        config = RouteConfig(
-            name="dry-test",
-            rules=[
-                RouteRule(
-                    role=StepRole.ORIENT, model="mock-v1", backend=Backend.MOCK, timeout_minutes=1
-                ),
-                RouteRule(
-                    role=StepRole.EXECUTE, model="mock-v2", backend=Backend.MOCK, timeout_minutes=1
-                ),
-            ],
-        )
         backends = {
             Backend.MOCK: BackendConfig(type=Backend.MOCK, env_overrides={"MOCK_RESPONSE": "PONG"}),
         }
-        router = ExecutionRouter(config, backends)
-        results = router.dry_run()
+        router = ExecutionRouter(backends=backends, default_backend=Backend.MOCK)
+        results = router.dry_run([
+            ("mock-v1", "auto"),
+            ("mock-v2", "auto"),
+        ])
 
-        # Should test all configured roles
-        assert len(results) >= 2
-        for role, model, reachable in results:
-            assert reachable, f"Mock backend should always be reachable: {role}:{model}"
+        assert len(results) == 2
+        for model, backend_name, reachable in results:
+            assert reachable, f"Mock backend should always be reachable: {backend_name}:{model}"
