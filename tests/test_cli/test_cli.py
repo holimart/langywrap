@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from click.testing import CliRunner
-from langywrap.cli import main
+from langywrap.cli import _build_router, main
+from langywrap.router.backends import Backend
 
 
 class TestCLI:
@@ -71,3 +72,17 @@ class TestCLI:
         result = runner.invoke(main, ["couple", "remove", str(tmp_path)])
         assert result.exit_code == 0
         assert "No coupling" in result.output
+
+    def test_build_router_records_claude_binary(self, tmp_path, monkeypatch) -> None:
+        def fake_which(name: str) -> str | None:
+            if name == "claude":
+                return "/opt/bin/claude"
+            if name == "opencode":
+                return "/opt/bin/opencode"
+            return None
+
+        monkeypatch.setattr("langywrap.cli.shutil.which", fake_which)
+
+        router = _build_router(tmp_path)
+
+        assert router._backends[Backend.CLAUDE].binary_path == "/opt/bin/claude"

@@ -361,7 +361,13 @@ def _build_router(project_dir: Path) -> ExecutionRouter:  # noqa: F821
     execwrap = find_execwrap(project_dir)
     rtk = find_rtk(project_dir)
 
-    # Discover opencode binary
+    # Discover CLI binaries for dry-run visibility and stable runtime lookup.
+    claude_bin = shutil.which("claude")
+    if not claude_bin:
+        claude_path = Path.home() / ".local" / "bin" / "claude"
+        if claude_path.exists():
+            claude_bin = str(claude_path)
+
     opencode_bin = shutil.which("opencode")
     if not opencode_bin:
         oc_path = Path.home() / ".opencode" / "bin" / "opencode"
@@ -386,6 +392,7 @@ def _build_router(project_dir: Path) -> ExecutionRouter:  # noqa: F821
     if Backend.CLAUDE in used_backends:
         backends[Backend.CLAUDE] = BackendConfig(
             type=Backend.CLAUDE,
+            binary_path=claude_bin,
             execwrap_path=execwrap,
             rtk_path=rtk,
             timeout_seconds=max_step_timeout,
