@@ -13,7 +13,7 @@ import select
 import subprocess
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -210,10 +210,7 @@ class RalphLoop:
                 consecutive_failures = 0
 
             if result.auth_failed:
-                self._log(
-                    "AUTH FAILURE — stopping loop. "
-                    f"Snippet: {result.auth_failed_snippet!r}"
-                )
+                self._log(f"AUTH FAILURE — stopping loop. Snippet: {result.auth_failed_snippet!r}")
                 break
 
             if result.rate_limited:
@@ -801,11 +798,13 @@ class RalphLoop:
     # ------------------------------------------------------------------
 
     def dry_run(self) -> dict:
-        """Validate setup without running any AI calls.
+        """Validate setup without running a Ralph cycle.
 
         Returns a dict with validation results. Also prints the same
         enrichment-channel + graphify-health preflight as ``run()`` so
-        operators catch missing CLIs before spending tokens.
+        operators catch missing CLIs before a full cycle. When a router is
+        configured, this also performs lightweight model connectivity pings so
+        missing provider config/API keys are caught before the loop starts.
         """
         self._warn_redundant_enrichment()
         self._verify_graphify_health()
@@ -853,6 +852,7 @@ class RalphLoop:
                 "type": type(self.router).__name__,
                 "backends": {},
                 "routing": [],
+                "connectivity": [],
             }
             for backend_enum, backend_cfg in self.router._backends.items():
                 router_info["backends"][backend_enum.value] = {
@@ -878,6 +878,19 @@ class RalphLoop:
                 if step.output_as:
                     entry["output_as"] = step.output_as
                 router_info["routing"].append(entry)
+            targets = [
+                (step.model, step.engine, step.timeout_minutes * 60) for step in self.config.steps
+            ]
+            router_info["connectivity"] = [
+                {
+                    "model": result.model,
+                    "backend": result.backend,
+                    "reachable": result.reachable,
+                    "reason": result.reason,
+                    "detail": result.detail,
+                }
+                for result in self.router.dry_run_detailed(targets)
+            ]
             report["router"] = router_info
         else:
             report["router"] = "None (stub mode)"
@@ -1084,7 +1097,7 @@ class RalphLoop:
             return
 
         while True:
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             hour = now.hour
 
             if self.config.throttle_weekdays_only and now.weekday() >= 5:
@@ -1406,6 +1419,14 @@ class RalphLoop:
             return table_match.group(1).strip()[:72]
 
         return ""
+
+    def _extract_plan_summary(self) -> str:
+        """Return a short one-line summary from the current plan file.
+
+        Kept for compatibility with callers/tests that used the old plan-only
+        summary helper before commit summaries started preferring progress.md.
+        """
+        return self._extract_first_meaningful_line(self.state.read_plan())
 
     @staticmethod
     def _extract_first_meaningful_line(text: str) -> str:

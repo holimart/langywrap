@@ -397,6 +397,7 @@ def _build_router(project_dir: Path) -> ExecutionRouter:  # noqa: F821
             rtk_path=rtk,
             timeout_seconds=max_step_timeout,
             stream_output=stream_output,
+            cwd=str(project_dir),
         )
 
     if Backend.OPENCODE in used_backends:
@@ -407,6 +408,7 @@ def _build_router(project_dir: Path) -> ExecutionRouter:  # noqa: F821
             rtk_path=rtk,
             timeout_seconds=max_step_timeout,
             stream_output=stream_output,
+            cwd=str(project_dir),
         )
 
     if Backend.OPENROUTER in used_backends:
@@ -621,18 +623,13 @@ def router_show(path: str) -> None:
     cfg = load_ralph_config(project_dir)
     click.echo(f"Project: {project_dir.name}")
     if cfg.throttle_utc_start is not None and cfg.throttle_utc_end is not None:
-        click.echo(
-            f"Peak hours: {cfg.throttle_utc_start:02d}:00-"
-            f"{cfg.throttle_utc_end:02d}:00 UTC"
-        )
+        click.echo(f"Peak hours: {cfg.throttle_utc_start:02d}:00-{cfg.throttle_utc_end:02d}:00 UTC")
     click.echo(f"\nSteps ({len(cfg.steps)}):")
     for step in cfg.steps:
         backend = _resolve_engine_backend(step.engine) or _infer_backend_from_model(step.model)
         retry = f"  retry: {step.retry_models}" if step.retry_models else ""
         click.echo(
-            f"  {step.name:<12} {step.model:<40} "
-            f"{backend.value:<10} "
-            f"{step.timeout_minutes}m{retry}"
+            f"  {step.name:<12} {step.model:<40} {backend.value:<10} {step.timeout_minutes}m{retry}"
         )
 
 
@@ -647,13 +644,15 @@ def router_test(model: str | None, path: str) -> None:
     cfg = load_ralph_config(project_dir)
     router_instance = _build_router(project_dir)
 
-    targets = [
-        (step.model, step.engine, step.timeout_minutes * 60) for step in cfg.steps
-    ]
-    results = router_instance.dry_run(targets)
+    targets = [(step.model, step.engine, step.timeout_minutes * 60) for step in cfg.steps]
+    results = router_instance.dry_run_detailed(targets)
 
-    for model_name, engine_name, reachable in results:
-        if model and model not in model_name:
+    for result in results:
+        if model and model not in result.model:
             continue
-        status = click.style("OK", fg="green") if reachable else click.style("FAIL", fg="red")
-        click.echo(f"  {model_name:<40} {engine_name:<10} {status}")
+        status = (
+            click.style("OK", fg="green") if result.reachable else click.style("FAIL", fg="red")
+        )
+        reason = "" if result.reachable else f"  {result.reason}"
+        detail = f" - {result.detail}" if result.detail else ""
+        click.echo(f"  {result.model:<40} {result.backend:<10} {status}{reason}{detail}")

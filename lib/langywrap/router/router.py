@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import datetime
 import logging
+import subprocess
 import threading
 import time
 from collections import defaultdict
@@ -48,6 +49,21 @@ from .backends import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class DryRunResult:
+    """Detailed connectivity result for a single model/backend target."""
+
+    model: str
+    backend: str
+    reachable: bool
+    reason: str = ""
+    detail: str = ""
+
+    def as_tuple(self) -> tuple[str, str, bool]:
+        """Backward-compatible result shape used by older callers."""
+        return (self.model, self.backend, self.reachable)
 
 
 # ---------------------------------------------------------------------------
@@ -111,6 +127,47 @@ def _estimate_cost(model: str, tokens: int) -> float:
         if prefix in model_lower:
             return rate * tokens / 1000
     return 0.001 * tokens / 1000  # unknown model: assume $0.001/1K
+
+
+def _trim_detail(text: str, limit: int = 240) -> str:
+    """Collapse diagnostic text to one short display line."""
+    line = " ".join((text or "").strip().split())
+    if len(line) > limit:
+        return line[: limit - 1] + "…"
+    return line
+
+
+def _classify_failed_result(result: SubagentResult) -> tuple[str, str]:
+    """Map backend output to a dry-run failure category and detail."""
+    result_parts = (result.error, result.text, result.raw_output.decode(errors="replace"))
+    combined = "\n".join(part for part in result_parts if part)
+    lower = combined.lower()
+
+    if "providermodelnotfounderror" in lower or "model not found:" in lower:
+        return "model_not_configured", _trim_detail(combined)
+    if result.auth_failed:
+        return "auth_failed", _trim_detail(result.auth_failed_snippet or combined)
+    if any(
+        marker in lower
+        for marker in (
+            "api key",
+            "apikey",
+            "unauthorized",
+            "forbidden",
+            'statuscode":401',
+            'statuscode":403',
+            "missing credentials",
+            "no credentials",
+        )
+    ):
+        return "auth_failed", _trim_detail(combined)
+    if result.rate_limited:
+        return "rate_limited", _trim_detail(result.rate_limit_snippet or combined)
+    if result.timed_out:
+        return "timeout", _trim_detail(combined)
+    if result.exit_code != 0:
+        return "backend_error", _trim_detail(combined)
+    return "unexpected_response", _trim_detail(result.text or combined)
 
 
 # ---------------------------------------------------------------------------
@@ -430,19 +487,68 @@ class ExecutionRouter:
         )
         return last_result
 
-    def dry_run(
+    def _check_opencode_model_registered(
+        self,
+        model: str,
+        backend_cfg: BackendConfig,
+    ) -> DryRunResult | None:
+        """Return a failure if OpenCode's active config does not list model."""
+        if "/" not in model:
+            return None
+
+        provider, model_id = model.split("/", 1)
+        binary = backend_cfg.binary_path or "opencode"
+        try:
+            proc = subprocess.run(
+                [binary, "models", provider],
+                cwd=backend_cfg.cwd,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            logger.info("dry_run: could not preflight opencode models: %s", exc)
+            return None
+
+        output = (proc.stdout or "") + (proc.stderr or "")
+        if proc.returncode != 0:
+            return DryRunResult(
+                model=model,
+                backend=Backend.OPENCODE.value,
+                reachable=False,
+                reason="model_not_configured",
+                detail=_trim_detail(
+                    output or f"opencode models {provider} exited {proc.returncode}"
+                ),
+            )
+
+        listed = {line.strip() for line in output.splitlines() if line.strip()}
+        if model not in listed and model_id not in listed:
+            return DryRunResult(
+                model=model,
+                backend=Backend.OPENCODE.value,
+                reachable=False,
+                reason="model_not_configured",
+                detail=(
+                    f"OpenCode active config does not list {model}. "
+                    f"Add provider.{provider}.models.{model_id}."
+                ),
+            )
+        return None
+
+    def dry_run_detailed(
         self,
         targets: Iterable[tuple[str, str]] | Iterable[tuple[str, str, int]],
-    ) -> list[tuple[str, str, bool]]:
+    ) -> list[DryRunResult]:
         """
         Ping each (model, engine) or (model, engine, timeout_s) target.
 
-        Returns a list of ``(model, engine, reachable)`` tuples. The first
-        tuple item is the model id so callers can correlate with their
-        pipeline steps; engine is the resolved backend name. Does not
-        modify stats.
+        Returns one :class:`DryRunResult` per unique ``(model, backend)``.
+        It distinguishes common operator-actionable failures such as
+        ``model_not_configured`` and ``auth_failed``.
         """
-        results: list[tuple[str, str, bool]] = []
+        results: list[DryRunResult] = []
         ping_prompt = "Reply with exactly: PONG"
 
         seen: set[tuple[str, str]] = set()
@@ -465,8 +571,22 @@ class ExecutionRouter:
             )
             if backend_cfg is None:
                 logger.warning("dry_run: no backend configured for %s", engine_backend.value)
-                results.append((model, engine_backend.value, False))
+                results.append(
+                    DryRunResult(
+                        model=model,
+                        backend=engine_backend.value,
+                        reachable=False,
+                        reason="backend_not_configured",
+                        detail=f"No backend configured for {engine_backend.value}",
+                    )
+                )
                 continue
+
+            if engine_backend is Backend.OPENCODE:
+                model_failure = self._check_opencode_model_registered(model, backend_cfg)
+                if model_failure is not None:
+                    results.append(model_failure)
+                    continue
 
             try:
                 backend = create_backend(backend_cfg)
@@ -475,23 +595,54 @@ class ExecutionRouter:
                     model=model,
                     timeout=min(60, timeout_s),
                 )
-                reachable = result.ok and "PONG" in result.text.upper()
+                reachable = result.ok and (
+                    "PONG" in result.text.upper()
+                    or (
+                        len(result.text) > 500
+                        and not result.auth_failed
+                        and not result.rate_limited
+                    )
+                )
+                reason = "ok" if reachable else _classify_failed_result(result)[0]
+                detail = "" if reachable else _classify_failed_result(result)[1]
                 logger.info(
-                    "dry_run: %s/%s → %s (exit=%d, %dB)",
+                    "dry_run: %s/%s → %s (%s, exit=%d, %dB)",
                     engine_backend.value,
                     model,
                     "OK" if reachable else "FAIL",
+                    reason,
                     result.exit_code,
                     len(result.raw_output),
                 )
-                results.append((model, engine_backend.value, reachable))
-            except Exception as exc:
-                logger.error(
-                    "dry_run: %s/%s → exception: %s", engine_backend.value, model, exc
+                results.append(
+                    DryRunResult(
+                        model=model,
+                        backend=engine_backend.value,
+                        reachable=reachable,
+                        reason=reason,
+                        detail=detail,
+                    )
                 )
-                results.append((model, engine_backend.value, False))
+            except Exception as exc:
+                logger.error("dry_run: %s/%s → exception: %s", engine_backend.value, model, exc)
+                results.append(
+                    DryRunResult(
+                        model=model,
+                        backend=engine_backend.value,
+                        reachable=False,
+                        reason="exception",
+                        detail=_trim_detail(str(exc)),
+                    )
+                )
 
         return results
+
+    def dry_run(
+        self,
+        targets: Iterable[tuple[str, str]] | Iterable[tuple[str, str, int]],
+    ) -> list[tuple[str, str, bool]]:
+        """Backward-compatible dry run returning ``(model, backend, ok)`` tuples."""
+        return [result.as_tuple() for result in self.dry_run_detailed(targets)]
 
     def get_stats(self) -> dict[str, Any]:
         """
@@ -536,7 +687,7 @@ class ExecutionRouter:
             return
         start_h, end_h = self._peak_hours
         while True:
-            now_utc = datetime.datetime.now(datetime.timezone.utc)
+            now_utc = datetime.datetime.now(datetime.UTC)
             hour = now_utc.hour
             if start_h <= hour < end_h:
                 wait_minutes = (end_h - hour) * 60 - now_utc.minute

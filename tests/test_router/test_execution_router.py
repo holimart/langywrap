@@ -9,7 +9,9 @@ from langywrap.router.backends import (
     SubagentResult,
 )
 from langywrap.router.router import (
+    DryRunResult,
     ExecutionRouter,
+    _classify_failed_result,
     _estimate_cost,
     _HeartbeatWatcher,
     _infer_backend_from_model,
@@ -250,6 +252,67 @@ def test_dry_run_with_mock_backend():
     results = router.dry_run(targets)
     assert isinstance(results, list)
     assert all(isinstance(t, tuple) and len(t) == 3 for t in results)
+
+
+def test_dry_run_detailed_no_backend_has_reason():
+    router = ExecutionRouter()  # no backends configured
+    results = router.dry_run_detailed([("claude-haiku-4-5-20251001", "claude")])
+    assert results == [
+        DryRunResult(
+            model="claude-haiku-4-5-20251001",
+            backend="claude",
+            reachable=False,
+            reason="backend_not_configured",
+            detail="No backend configured for claude",
+        )
+    ]
+
+
+def test_dry_run_detailed_detects_opencode_model_not_configured(tmp_path):
+    shim = tmp_path / "opencode"
+    shim.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [[ "$1" == "models" ]]; then\n'
+        "  printf '%s\\n' 'openai/gpt-5.5'\n"
+        "  exit 0\n"
+        "fi\n"
+        "exit 99\n"
+    )
+    shim.chmod(0o755)
+
+    router = ExecutionRouter(
+        backends={Backend.OPENCODE: BackendConfig(type=Backend.OPENCODE, binary_path=str(shim))},
+        default_backend=Backend.OPENCODE,
+    )
+    results = router.dry_run_detailed([("nvidia/moonshotai/kimi-k2.5", "opencode")])
+    assert len(results) == 1
+    assert results[0].reachable is False
+    assert results[0].reason == "model_not_configured"
+    assert "provider.nvidia.models.moonshotai/kimi-k2.5" in results[0].detail
+
+
+def test_classify_failed_result_detects_opencode_model_not_found():
+    result = SubagentResult(
+        text='ProviderModelNotFoundError: data: { providerID: "nvidia" }',
+        exit_code=1,
+        duration_seconds=0.1,
+        model_used="nvidia/moonshotai/kimi-k2.5",
+        backend_used=Backend.OPENCODE,
+    )
+    reason, _ = _classify_failed_result(result)
+    assert reason == "model_not_configured"
+
+
+def test_classify_failed_result_detects_missing_key_auth():
+    result = SubagentResult(
+        text="Missing API key for NVIDIA",
+        exit_code=1,
+        duration_seconds=0.1,
+        model_used="nvidia/moonshotai/kimi-k2.5",
+        backend_used=Backend.OPENCODE,
+    )
+    reason, _ = _classify_failed_result(result)
+    assert reason == "auth_failed"
 
 
 def test_dry_run_no_backend_returns_false():
