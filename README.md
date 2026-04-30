@@ -185,6 +185,36 @@ loop start if enrichment is enabled but no rebuild is scheduled, or if
 `graphify .` (full build) is used without `textify` preceding it (avoids
 silent LLM consumption on binary docs).
 
+#### Dry-run preflight
+
+`langywrap ralph --dry-run` runs a no-LLM `MockBackend` probe. It checks that
+tool discovery and runtime wiring agree, including sibling/editable installs:
+
+| Field | Meaning |
+|-------|---------|
+| `execwrap_applied` | backend command is launched through execwrap |
+| `rtk_outer_applied` | backend command is directly prefixed with RTK |
+| `rtk_internal_applied` | execwrap shell mode emitted an internal RTK rewrite |
+| `rtk_wired` | RTK is actually active, either outer or internal |
+| `execwrap_project_dir_is_project` | sibling execwrap uses the target project via `EXECWRAP_PROJECT_DIR` |
+
+When execwrap is present, `rtk_outer_applied=false` is expected. The important
+signal is `rtk_wired=true`, which confirms execwrap can find RTK and execute the
+rewritten `rtk ...` command.
+
+### OpenWolf Integration
+
+OpenWolf is wired as runtime memory hooks, not as a command wrapper. Use:
+
+```bash
+langywrap integration openwolf status .
+langywrap integration openwolf wire . --init --langywrap-only
+```
+
+`--langywrap-only` gates Claude hooks and the OpenCode plugin behind
+`LANGYWRAP_OPENWOLF=1`, so normal direct tool launches do not activate
+OpenWolf unless langywrap set the environment.
+
 ### HyperAgents + Memento Skills
 
 Agent evolution framework. Every coupled repo participates via ralph loops.
@@ -237,6 +267,30 @@ result = backend.run("prompt", "mock-v1", timeout=10)
 ./just lint       # ruff check -q
 ./just typecheck  # mypy
 ```
+
+Pytest collection is intentionally limited to `tests/`; vendored submodules
+such as `graphify/` have their own test suites and otherwise collide with
+langywrap's top-level `tests` package.
+
+Useful focused test commands:
+
+```bash
+uv run pytest tests/test_helpers/test_discovery.py
+uv run pytest tests/test_integrations/test_openwolf.py
+uv run pytest tests/test_ralph/test_dry_run_probe.py
+uv run pytest tests/test_execwrap/test_rtk_integration.py
+uv run --extra dev pytest --cov=langywrap --cov-report=term-missing
+```
+
+Regression lessons covered by tests:
+
+| Area | Protected behavior |
+|------|--------------------|
+| discovery | project-local, configured hub, sibling langywrap, PATH, and actionable hints |
+| execwrap + RTK | sibling execwrap finds `../.exec/rtk`, puts it on `PATH`, and rewrites in shell mode |
+| quality gates | logged execwrap commands preserve failing exit codes (`pipefail`) |
+| dry-run probe | `rtk_wired` detects actual internal RTK rewrite, not just discovery |
+| OpenWolf | Claude hooks and OpenCode plugin support `--langywrap-only` gating |
 
 ## Project Structure
 

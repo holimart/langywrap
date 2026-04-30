@@ -265,6 +265,25 @@ class TestGate:
     def test_gate_timeout(self):
         assert gate("sleep 10", timeout=1) is False
 
+    def test_gate_output_timeout_and_exception(self, monkeypatch):
+        import subprocess
+
+        def timeout_run(*args, **kwargs):
+            raise subprocess.TimeoutExpired("cmd", 1)
+
+        monkeypatch.setattr("langywrap.ralph.module.subprocess.run", timeout_run)
+        passed, output = gate_output("cmd", timeout=1)
+        assert passed is False
+        assert "timed out" in output
+
+        def error_run(*args, **kwargs):
+            raise OSError("boom")
+
+        monkeypatch.setattr("langywrap.ralph.module.subprocess.run", error_run)
+        passed, output = gate_output("cmd")
+        assert passed is False
+        assert output == "boom"
+
 
 # ---------------------------------------------------------------------------
 # Module
@@ -543,6 +562,97 @@ class TestHyperAgentIntegration:
         m.apply_overrides({"nonexistent.model": "opus"})
         # No error, no change
         assert len(m._step_defs) == 3
+
+    def test_invalid_override_key_ignored(self):
+        m = SimplePipeline()
+        before = m._step_defs["orient"].model
+        m.apply_overrides({"orient": "bad"})
+        assert m._step_defs["orient"].model == before
+
+    def test_get_forward_source_handles_inspect_error(self, monkeypatch):
+        m = SimplePipeline()
+        monkeypatch.setattr(
+            "langywrap.ralph.module.inspect.getsource",
+            lambda obj: (_ for _ in ()).throw(OSError()),
+        )
+        assert m.get_forward_source() == ""
+
+    def test_get_source_file_handles_inspect_error(self, monkeypatch):
+        m = SimplePipeline()
+        monkeypatch.setattr(
+            "langywrap.ralph.module.inspect.getfile",
+            lambda obj: (_ for _ in ()).throw(TypeError()),
+        )
+        assert m.get_source_file() is None
+
+    def test_execute_step_with_router_success(self, prompts_dir, state_dir, tmp_path):
+        class Router:
+            def execute(self, **kwargs):
+                self.kwargs = kwargs
+                return type("Result", (), {"text": "router output"})()
+
+        router = Router()
+        m = SimplePipeline()
+        m.verbose = False
+        ModuleRunner(m, project_dir=tmp_path, router=router)
+        m._cycle_num = 1
+        m._orient_context = "context"
+
+        output = m.orient(inject="extra")
+
+        assert output == "router output"
+        assert m.orient.success is True
+        assert (state_dir / "steps" / "orient.md").read_text(encoding="utf-8") == "router output"
+        assert router.kwargs["model"].startswith("claude-")
+        assert router.kwargs["tag"] == "orient"
+
+    def test_execute_step_missing_prompt_and_abort(self, prompts_dir, state_dir, tmp_path):
+        m = SimplePipeline()
+        m.verbose = False
+        ModuleRunner(m, project_dir=tmp_path, router=object())
+        m._cycle_num = 1
+        m._orient_context = ""
+
+        output = m._execute_step("missing", "m", "absent.md", 1, [], fail_fast=True)
+        assert output[1] is False
+        assert "no prompt template" in output[0]
+
+        m._abort = True
+        skipped = m._execute_step("later", "m", "orient.md", 1, [])
+        assert "SKIPPED" in skipped[0]
+
+    def test_execute_step_router_timeout_sets_abort(
+        self, prompts_dir, state_dir, tmp_path, monkeypatch
+    ):
+        class Router:
+            def execute(self, **kwargs):
+                raise TimeoutError("hung")
+
+        monkeypatch.setattr("langywrap.ralph.module.time.sleep", lambda seconds: None)
+        m = SimplePipeline()
+        m.verbose = False
+        ModuleRunner(m, project_dir=tmp_path, router=Router())
+        m._cycle_num = 1
+        output, success = m._execute_step("orient", "m", "orient.md", 1, [], fail_fast=True)
+
+        assert success is False
+        assert "TIMEOUT" in output
+        assert m._abort is True
+
+    def test_execute_step_router_error_sets_abort(self, prompts_dir, state_dir, tmp_path):
+        class Router:
+            def execute(self, **kwargs):
+                raise RuntimeError("bad api")
+
+        m = SimplePipeline()
+        m.verbose = False
+        ModuleRunner(m, project_dir=tmp_path, router=Router())
+        m._cycle_num = 1
+        output, success = m._execute_step("orient", "m", "orient.md", 1, [], fail_fast=True)
+
+        assert success is False
+        assert "bad api" in output
+        assert m._abort is True
 
 
 # ---------------------------------------------------------------------------

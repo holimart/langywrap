@@ -1424,6 +1424,7 @@ class MockBackend:
                 capture_output=True,
                 timeout=effective_timeout,
                 env=env,
+                cwd=self.config.cwd,
             )
             raw = proc.stdout + proc.stderr
             exit_code = proc.returncode

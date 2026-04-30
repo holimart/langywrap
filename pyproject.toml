@@ -32,6 +32,7 @@ dev = [
     "pytest",
     "ruff",
     "mypy",
+    "pytest-cov",
     "pytest-xdist",
 ]
 
@@ -62,3 +63,4 @@ pretty = false
 
 [tool.pytest.ini_options]
 addopts = "-q --tb=short"
+testpaths = ["tests"]

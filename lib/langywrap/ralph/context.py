@@ -9,8 +9,9 @@ build_enrichments: per-step opt-in external context (e.g. Graphify report).
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from langywrap.ralph.state import RalphState
@@ -202,8 +203,34 @@ def _read_graphify_report(project_dir: Path) -> str:
     return content
 
 
+def _read_openwolf_context(project_dir: Path) -> str:
+    """Read capped OpenWolf project memory if ``.wolf/`` is initialized."""
+    wolf = project_dir / ".wolf"
+    if not wolf.is_dir():
+        return ""
+    parts: list[str] = []
+    for name in ["OPENWOLF.md", "cerebrum.md", "anatomy.md", "buglog.json"]:
+        path = wolf / name
+        if not path.is_file():
+            continue
+        try:
+            content = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if not content.strip():
+            continue
+        parts.append(f"## .wolf/{name}\n\n{content}")
+    block = "\n\n".join(parts)
+    if len(block) > _ENRICHMENT_MAX_CHARS:
+        block = block[:_ENRICHMENT_MAX_CHARS] + (
+            f"\n\n[... truncated at {_ENRICHMENT_MAX_CHARS} chars ...]"
+        )
+    return block
+
+
 ENRICHERS: dict[str, Callable[[Path], str]] = {
     "graphify": _read_graphify_report,
+    "openwolf": _read_openwolf_context,
 }
 
 
@@ -279,7 +306,9 @@ def check_graphify_health(
     The function is pure — no side effects, no installation attempts. The
     runner decides what to do with the report (warn vs auto-install).
     """
-    import shutil
+    import shlex
+
+    from langywrap.helpers.discovery import find_tool
 
     uses_enrichment = any("graphify" in e for e in step_enrichments)
     cmd_blob = " ".join(post_cycle_commands).lower()
@@ -300,8 +329,25 @@ def check_graphify_health(
     )
     has_textify_extract = "textify" in cmd_blob
 
-    graphify_installed = shutil.which("graphify") is not None
-    textify_installed = shutil.which("textify") is not None
+    graphify_path = find_tool("graphify", project_dir)
+    textify_path = find_tool("textify", project_dir)
+    graphify_installed = graphify_path is not None
+    textify_installed = textify_path is not None
+
+    missing_command_paths: list[str] = []
+    for cmd in post_cycle_commands:
+        try:
+            parts = shlex.split(cmd)
+        except ValueError:
+            continue
+        if not parts:
+            continue
+        exe = parts[0]
+        exe_path = Path(exe)
+        if not exe_path.is_absolute():
+            exe_path = project_dir / exe_path
+        if "/" in exe and ("graphify" in exe or "textify" in exe) and not exe_path.exists():
+            missing_command_paths.append(exe)
 
     issues: list[str] = []
 
@@ -312,13 +358,18 @@ def check_graphify_health(
         )
     if has_graphify_rebuild and not graphify_installed:
         issues.append(
-            "post_cycle_commands invokes graphify but the CLI is not on PATH. "
+            "post_cycle_commands invokes graphify but the CLI was not discovered. "
             "Install via langywrap: ./just install-graphify."
         )
     if has_textify_extract and not textify_installed:
         issues.append(
-            "post_cycle_commands invokes textify but the CLI is not on PATH. "
+            "post_cycle_commands invokes textify but the CLI was not discovered. "
             "Install via langywrap: ./just install-textify."
+        )
+    for exe in missing_command_paths:
+        issues.append(
+            f"post_cycle_commands references missing executable path {exe!r}. "
+            "Use a bare command name (graphify/textify) or install that exact path."
         )
     if uses_enrichment and not has_graphify_rebuild:
         issues.append(
@@ -351,6 +402,9 @@ def check_graphify_health(
         "has_textify_extract": has_textify_extract,
         "graphify_installed": graphify_installed,
         "textify_installed": textify_installed,
+        "graphify_path": graphify_path,
+        "textify_path": textify_path,
+        "missing_command_paths": missing_command_paths,
         "issues": issues,
     }
 

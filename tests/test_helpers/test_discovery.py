@@ -3,7 +3,13 @@ from __future__ import annotations
 import stat
 from unittest.mock import patch
 
-from langywrap.helpers.discovery import find_binary, find_execwrap, find_rtk
+from langywrap.helpers.discovery import (
+    discovery_report,
+    find_binary,
+    find_execwrap,
+    find_rtk,
+    find_tool,
+)
 
 # ---------------------------------------------------------------------------
 # find_binary
@@ -86,10 +92,65 @@ def test_find_rtk_returns_none_when_nothing_found(tmp_path):
     # project_dir with no .exec/rtk, PATH returns nothing, home has no rtk
     fake_home = tmp_path / "fakehome"
     fake_home.mkdir()
+    fake_package = tmp_path / "fakepkg"
+    fake_package.mkdir()
     with patch("shutil.which", return_value=None), \
-         patch("pathlib.Path.home", return_value=fake_home):
+         patch("pathlib.Path.home", return_value=fake_home), \
+         patch("langywrap.helpers.discovery._package_root", return_value=fake_package):
         result = find_rtk(project_dir=tmp_path)
     assert result is None
+
+
+def test_find_rtk_sibling_langywrap_fallback(tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    sibling = tmp_path / "langywrap" / ".exec"
+    sibling.mkdir(parents=True)
+    rtk_bin = sibling / "rtk"
+    rtk_bin.write_text("#!/bin/sh\n")
+    rtk_bin.chmod(0o755)
+
+    with patch("shutil.which", return_value=None), \
+         patch("pathlib.Path.home", return_value=tmp_path / "fakehome"):
+        result = find_rtk(project_dir=project)
+
+    assert result == str(rtk_bin.resolve())
+
+
+def test_find_tool_honors_langywrap_config_root(tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    configured = tmp_path / "hub"
+    tool_dir = configured / ".venv" / "bin"
+    tool_dir.mkdir(parents=True)
+    graphify = tool_dir / "graphify"
+    graphify.write_text("#!/bin/sh\n")
+    graphify.chmod(0o755)
+    (project / ".langywrap").mkdir()
+    (project / ".langywrap" / "config.yaml").write_text(
+        f"langywrap_dir: {configured}\n"
+    )
+
+    with patch("shutil.which", return_value=None), \
+         patch("pathlib.Path.home", return_value=tmp_path / "fakehome"):
+        result = find_tool("graphify", project_dir=project)
+
+    assert result == str(graphify)
+
+
+def test_discovery_report_includes_actionable_missing_hints(tmp_path):
+    fake_home = tmp_path / "fakehome"
+    fake_home.mkdir()
+    fake_package = tmp_path / "fakepkg"
+    fake_package.mkdir()
+    with patch("shutil.which", return_value=None), \
+         patch("pathlib.Path.home", return_value=fake_home), \
+         patch("langywrap.helpers.discovery._package_root", return_value=fake_package):
+        report = discovery_report(project_dir=tmp_path)
+
+    assert "rtk" in report["hints"]
+    assert "execwrap" in report["hints"]
+    assert "Run" in report["hints"]["rtk"]
 
 
 # ---------------------------------------------------------------------------
@@ -116,7 +177,10 @@ def test_find_execwrap_project_dir_not_executable(tmp_path):
     ew.chmod(0o644)
 
     # Also ensure home candidate missing
-    with patch("pathlib.Path.home", return_value=tmp_path / "fakehome"):
+    fake_package = tmp_path / "fakepkg"
+    fake_package.mkdir()
+    with patch("pathlib.Path.home", return_value=tmp_path / "fakehome"), \
+         patch("langywrap.helpers.discovery._package_root", return_value=fake_package):
         result = find_execwrap(project_dir=tmp_path)
     assert result is None
 
@@ -124,12 +188,18 @@ def test_find_execwrap_project_dir_not_executable(tmp_path):
 def test_find_execwrap_no_project_dir_no_home(tmp_path):
     fake_home = tmp_path / "home"
     fake_home.mkdir()
-    with patch("pathlib.Path.home", return_value=fake_home):
+    fake_package = tmp_path / "fakepkg"
+    fake_package.mkdir()
+    with patch("pathlib.Path.home", return_value=fake_home), \
+         patch("langywrap.helpers.discovery._package_root", return_value=fake_package):
         result = find_execwrap(project_dir=None)
     assert result is None
 
 
 def test_find_execwrap_returns_none_when_missing(tmp_path):
-    with patch("pathlib.Path.home", return_value=tmp_path / "fakehome"):
+    fake_package = tmp_path / "fakepkg"
+    fake_package.mkdir()
+    with patch("pathlib.Path.home", return_value=tmp_path / "fakehome"), \
+         patch("langywrap.helpers.discovery._package_root", return_value=fake_package):
         result = find_execwrap(project_dir=tmp_path)
     assert result is None

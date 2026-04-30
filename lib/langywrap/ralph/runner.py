@@ -8,8 +8,10 @@ Actual AI calls go through ExecutionRouter; shell wrapping for execwrap stays ba
 from __future__ import annotations
 
 import logging
+import os
 import re
 import select
+import shlex
 import subprocess
 import sys
 import time
@@ -17,6 +19,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from langywrap.helpers.discovery import discovery_report, find_tool
+from langywrap.integrations.openwolf import openwolf_status
 from langywrap.ralph.config import QualityGateConfig, RalphConfig, StepConfig
 from langywrap.ralph.context import (
     build_full_prompt,
@@ -117,6 +121,7 @@ class RalphLoop:
         self._log(f"  State dir: {self.config.resolved_state_dir}")
         self._log(f"  Steps:     {[s.name for s in self.config.steps]}")
 
+        self._verify_tool_discovery()
         self._warn_redundant_enrichment()
         self._verify_graphify_health()
 
@@ -806,6 +811,7 @@ class RalphLoop:
         configured, this also performs lightweight model connectivity pings so
         missing provider config/API keys are caught before the loop starts.
         """
+        tool_report = self._verify_tool_discovery()
         self._warn_redundant_enrichment()
         self._verify_graphify_health()
 
@@ -817,6 +823,7 @@ class RalphLoop:
             "state_files": {},
             "router": None,
             "quality_gate": None,
+            "tool_discovery": tool_report,
         }
 
         # Check state files
@@ -892,8 +899,10 @@ class RalphLoop:
                 for result in self.router.dry_run_detailed(targets)
             ]
             report["router"] = router_info
+            report["mock_backend_probe"] = self._run_mock_backend_probe()
         else:
             report["router"] = "None (stub mode)"
+            report["mock_backend_probe"] = self._run_mock_backend_probe()
 
         # Quality gate
         if self.config.quality_gate:
@@ -908,6 +917,135 @@ class RalphLoop:
         report["pending_tasks"] = self.state.pending_count()
 
         return report
+
+    def _run_mock_backend_probe(self) -> dict[str, Any]:
+        """Exercise backend wrapper plumbing without calling an external LLM."""
+        from langywrap.helpers.discovery import find_execwrap, find_rtk, find_tool
+        from langywrap.router.backends import Backend, BackendConfig, MockBackend, wrap_cmd
+
+        execwrap_path = find_execwrap(self.config.project_dir)
+        rtk_path = find_rtk(self.config.project_dir)
+        mock_command = (
+            "printf 'LANGYWRAP_OPENWOLF=%s\\n' \"${LANGYWRAP_OPENWOLF:-}\"; "
+            "printf 'PWD=%s\\n' \"$PWD\"; "
+            "printf 'SHELL=%s\\n' \"${SHELL:-}\"; "
+            "printf 'BASH_ENV=%s\\n' \"${BASH_ENV:-}\"; "
+            "printf 'EXECWRAP_PROJECT_DIR=%s\\n' \"${EXECWRAP_PROJECT_DIR:-}\"; "
+            "command -v textify >/dev/null && printf 'TEXTIFY_ON_PATH=1\\n' || "
+            "printf 'TEXTIFY_ON_PATH=0\\n'; "
+            "command -v graphify >/dev/null && printf 'GRAPHIFY_ON_PATH=1\\n' || "
+            "printf 'GRAPHIFY_ON_PATH=0\\n'; "
+            "command -v openwolf >/dev/null && printf 'OPENWOLF_ON_PATH=1\\n' || "
+            "printf 'OPENWOLF_ON_PATH=0\\n'"
+        )
+        env_overrides = {
+            "LANGYWRAP_OPENWOLF": "1",
+            "EXECWRAP_PROJECT_DIR": str(self.config.project_dir),
+            "MOCK_COMMAND": mock_command,
+        }
+        discovered_dirs: list[str] = []
+        for tool in ("textify", "graphify", "openwolf", "rtk"):
+            path = find_tool(tool, self.config.project_dir)
+            if path:
+                discovered_dirs.append(str(Path(path).parent))
+        if discovered_dirs:
+            import os
+
+            env_overrides["PATH"] = (
+                os.pathsep.join(dict.fromkeys(discovered_dirs))
+                + os.pathsep
+                + os.environ.get("PATH", "")
+            )
+
+        cfg = BackendConfig(
+            type=Backend.MOCK,
+            execwrap_path=execwrap_path,
+            rtk_path=rtk_path,
+            env_overrides=env_overrides,
+            timeout_seconds=10,
+            cwd=str(self.config.project_dir),
+        )
+        expected_cmd = wrap_cmd(["bash", "-c", mock_command], execwrap_path, rtk_path)
+        result = MockBackend(cfg).run("", "mock-preflight", timeout=10)
+        text = result.text or ""
+        rtk_probe_text = ""
+        if execwrap_path and rtk_path:
+            probe_env = os.environ.copy()
+            probe_env.update(env_overrides)
+            rtk_probe = subprocess.run(
+                [execwrap_path, "-c", "ls -l >/dev/null"],
+                cwd=self.config.project_dir,
+                env=probe_env,
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+            rtk_probe_text = (rtk_probe.stdout or "") + (rtk_probe.stderr or "")
+        probe_issues: list[str] = []
+        probe_hints: list[str] = []
+        execwrap_project_ok = f"EXECWRAP_PROJECT_DIR={self.config.project_dir}" in text
+        rtk_outer_applied = bool(rtk_path and expected_cmd[:1] == [rtk_path])
+        rtk_internal_applied = "RTK rewrite:" in rtk_probe_text
+        rtk_wired = bool(rtk_path and (rtk_outer_applied or rtk_internal_applied))
+        if execwrap_path and not execwrap_project_ok:
+            probe_issues.append(
+                "execwrap is applied, but EXECWRAP_PROJECT_DIR is not the target project"
+            )
+            probe_hints.append(
+                "Run `../langywrap/scripts/couple.sh . --defaults` to install a "
+                "project-local .exec/execwrap.bash, or set LANGYWRAP_EXECWRAP_PATH "
+                "to a project-local wrapper."
+            )
+        if rtk_path and execwrap_path and not rtk_wired:
+            probe_issues.append(
+                "RTK is discovered, but execwrap did not show an internal RTK rewrite"
+            )
+            probe_hints.append(
+                "Ensure execwrap can resolve RTK internally and that the resolved RTK "
+                "directory is on PATH before rewritten commands execute."
+            )
+        probe = {
+            "ran": True,
+            "ok": result.ok,
+            "exit_code": result.exit_code,
+            "execwrap_path": execwrap_path,
+            "rtk_path": rtk_path,
+            "wrapped_command": expected_cmd,
+            "execwrap_applied": bool(execwrap_path and expected_cmd[:1] == [execwrap_path]),
+            "rtk_outer_applied": rtk_outer_applied,
+            "rtk_internal_applied": rtk_internal_applied,
+            "rtk_wired": rtk_wired,
+            "openwolf_env": "LANGYWRAP_OPENWOLF=1" in text,
+            "textify_on_path": "TEXTIFY_ON_PATH=1" in text,
+            "graphify_on_path": "GRAPHIFY_ON_PATH=1" in text,
+            "openwolf_on_path": "OPENWOLF_ON_PATH=1" in text,
+            "cwd_is_project": f"PWD={self.config.project_dir}" in text,
+            "execwrap_project_dir_is_project": execwrap_project_ok,
+            "issues": probe_issues,
+            "hints": probe_hints,
+            "rtk_probe_output": rtk_probe_text[-2000:],
+            "output": text[-2000:],
+            "error": result.error,
+        }
+        self._log("  [mock backend probe]")
+        self._log(
+            "    "
+            f"ok={probe['ok']} execwrap={probe['execwrap_applied']} "
+            f"rtk_outer={probe['rtk_outer_applied']} "
+            f"rtk_wired={probe['rtk_wired']} "
+            f"openwolf_env={probe['openwolf_env']} "
+            f"textify_path={probe['textify_on_path']} "
+            f"graphify_path={probe['graphify_on_path']} "
+            f"execwrap_project={probe['execwrap_project_dir_is_project']}"
+        )
+        if not result.ok:
+            self._log(f"    error: {result.error}")
+        for msg in probe_issues:
+            self._log(f"    - {msg}")
+        for hint in probe_hints:
+            self._log(f"      fix: {hint}")
+        return probe
 
     # ------------------------------------------------------------------
     # Step retry loop
@@ -1018,13 +1156,24 @@ class RalphLoop:
         timeout = max(5, int(self.config.post_cycle_command_timeout))
         self._log(f"\n  Post-cycle commands ({len(commands)}):")
         for cmd in commands:
+            cmd = self._resolve_post_cycle_command(cmd)
             label = cmd if len(cmd) <= 80 else cmd[:77] + "..."
             self._log(f"    $ {label}")
             try:
+                env = os.environ.copy()
+                discovered_dirs = []
+                for tool in ("graphify", "textify", "openwolf", "rtk"):
+                    path = find_tool(tool, self.config.project_dir)
+                    if path:
+                        discovered_dirs.append(str(Path(path).parent))
+                if discovered_dirs:
+                    prefix = os.pathsep.join(dict.fromkeys(discovered_dirs))
+                    env["PATH"] = prefix + os.pathsep + env.get("PATH", "")
                 cp = subprocess.run(
                     cmd,
                     shell=True,
                     cwd=self.config.project_dir,
+                    env=env,
                     capture_output=True,
                     text=True,
                     timeout=timeout,
@@ -1042,6 +1191,69 @@ class RalphLoop:
                 self._log(f"    [warn] exit {cp.returncode}: {tail[:200]}")
             else:
                 self._log("    ok")
+
+    def _resolve_post_cycle_command(self, cmd: str) -> str:
+        """Rewrite stale graphify/textify executable paths to discovered fallbacks."""
+        try:
+            parts = shlex.split(cmd)
+        except ValueError:
+            return cmd
+        if not parts:
+            return cmd
+        exe = parts[0]
+        name = Path(exe).name
+        if name not in {"graphify", "textify", "openwolf", "rtk"}:
+            return cmd
+        exe_path = Path(exe)
+        if not exe_path.is_absolute():
+            exe_path = self.config.project_dir / exe_path
+        if "/" not in exe or exe_path.exists():
+            return cmd
+        replacement = find_tool(name, self.config.project_dir)
+        if replacement is None:
+            return cmd
+        parts[0] = replacement
+        return shlex.join(parts)
+
+    def _verify_tool_discovery(self) -> dict[str, Any]:
+        """Log project/local/langywrap fallback discovery before dry-run/run."""
+        report = discovery_report(self.config.project_dir)
+        report["openwolf"] = openwolf_status(self.config.project_dir)
+        self._log("  [tool preflight]")
+        tools: dict[str, str | None] = report.get("tools", {})  # type: ignore[assignment]
+        for name in ("execwrap", "rtk", "textify", "graphify", "openwolf"):
+            path = tools.get(name)
+            if path:
+                self._log(f"    {name}: {path}")
+            else:
+                self._log(f"    {name}: not found")
+        issues = report.get("issues") or []
+        hints = report.get("hints") or {}
+        if issues:
+            self._log(f"    {len(issues)} issue(s):")
+            for msg in issues:
+                self._log(f"      - {msg}")
+        if isinstance(hints, dict) and hints:
+            self._log("    install/fix helpers:")
+            for name, hint in hints.items():
+                self._log(f"      - {name}: {hint}")
+        ow = report.get("openwolf", {})
+        if isinstance(ow, dict):
+            ow_issues = ow.get("issues") or []
+            self._log(
+                "    openwolf wiring: "
+                f"wolf_dir={bool(ow.get('wolf_dir'))} "
+                f"claude_hooks={bool(ow.get('claude_hooks'))} "
+                f"opencode_plugin={bool(ow.get('opencode_plugin'))}"
+            )
+            for msg in ow_issues:
+                self._log(f"      - {msg}")
+            ow_hints = ow.get("hints") or []
+            if ow_hints:
+                self._log("      OpenWolf helpers:")
+                for hint in ow_hints:
+                    self._log(f"        - {hint}")
+        return report
 
     def _verify_graphify_health(self) -> None:
         """Preflight check for Graphify/Textify usage. Advisory only.

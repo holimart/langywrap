@@ -193,6 +193,61 @@ def couple_list() -> None:
 
 
 # ---------------------------------------------------------------------------
+# integrations
+# ---------------------------------------------------------------------------
+
+
+@main.group("integration")
+def integration() -> None:
+    """Wire optional tools into supported AI runtimes."""
+
+
+@integration.group("openwolf")
+def integration_openwolf() -> None:
+    """Manage OpenWolf project memory integration."""
+
+
+@integration_openwolf.command("status")
+@click.argument("repo", type=click.Path(exists=True), default=".")
+def openwolf_status_cmd(repo: str) -> None:
+    """Show OpenWolf binary, .wolf, Claude hook, and OpenCode plugin status."""
+    from langywrap.integrations.openwolf import openwolf_status
+
+    status = openwolf_status(Path(repo).resolve())
+    click.echo(json.dumps(status, indent=2, default=str))
+
+
+@integration_openwolf.command("wire")
+@click.argument("repo", type=click.Path(exists=True), default=".")
+@click.option("--init", "do_init", is_flag=True, help="Run `openwolf init` first if needed.")
+@click.option("--no-claude", is_flag=True, help="Do not wire Claude Code hooks.")
+@click.option("--no-opencode", is_flag=True, help="Do not install OpenCode plugin.")
+@click.option(
+    "--langywrap-only",
+    is_flag=True,
+    help="Install hooks/plugins that activate only for langywrap-launched runs.",
+)
+def openwolf_wire_cmd(
+    repo: str,
+    do_init: bool,
+    no_claude: bool,
+    no_opencode: bool,
+    langywrap_only: bool,
+) -> None:
+    """Wire OpenWolf into Claude Code and OpenCode for a project."""
+    from langywrap.integrations.openwolf import wire_openwolf
+
+    result = wire_openwolf(
+        Path(repo).resolve(),
+        init=do_init,
+        claude=not no_claude,
+        opencode=not no_opencode,
+        langywrap_only=langywrap_only,
+    )
+    click.echo(json.dumps(result, indent=2, default=str))
+
+
+# ---------------------------------------------------------------------------
 # scaffold
 # ---------------------------------------------------------------------------
 
@@ -360,6 +415,10 @@ def _build_router(project_dir: Path) -> ExecutionRouter:  # noqa: F821
 
     execwrap = find_execwrap(project_dir)
     rtk = find_rtk(project_dir)
+    env_overrides = {
+        "LANGYWRAP_OPENWOLF": "1",
+        "EXECWRAP_PROJECT_DIR": str(project_dir),
+    }
 
     # Discover CLI binaries for dry-run visibility and stable runtime lookup.
     claude_bin = shutil.which("claude")
@@ -395,6 +454,7 @@ def _build_router(project_dir: Path) -> ExecutionRouter:  # noqa: F821
             binary_path=claude_bin,
             execwrap_path=execwrap,
             rtk_path=rtk,
+            env_overrides=env_overrides,
             timeout_seconds=max_step_timeout,
             stream_output=stream_output,
             cwd=str(project_dir),
@@ -406,6 +466,7 @@ def _build_router(project_dir: Path) -> ExecutionRouter:  # noqa: F821
             binary_path=opencode_bin,
             execwrap_path=execwrap,
             rtk_path=rtk,
+            env_overrides=env_overrides,
             timeout_seconds=max_step_timeout,
             stream_output=stream_output,
             cwd=str(project_dir),
@@ -416,6 +477,7 @@ def _build_router(project_dir: Path) -> ExecutionRouter:  # noqa: F821
             type=Backend.OPENROUTER,
             api_key_source="OPENROUTER_API_KEY",
             rtk_path=rtk,
+            env_overrides=env_overrides,
             timeout_seconds=max_step_timeout,
         )
 
@@ -423,6 +485,7 @@ def _build_router(project_dir: Path) -> ExecutionRouter:  # noqa: F821
         backends[Backend.DIRECT_API] = BackendConfig(
             type=Backend.DIRECT_API,
             rtk_path=rtk,
+            env_overrides=env_overrides,
             timeout_seconds=max_step_timeout,
         )
 

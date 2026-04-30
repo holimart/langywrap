@@ -35,7 +35,7 @@ set -euo pipefail
 
 # Resolve paths robustly even when called as $SHELL
 EXECWRAP_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
-PROJECT_DIR="$(cd "$EXECWRAP_DIR/.." && pwd)"
+PROJECT_DIR="${EXECWRAP_PROJECT_DIR:-$(cd "$EXECWRAP_DIR/.." && pwd)}"
 SETTINGS="$EXECWRAP_DIR/settings.json"
 REAL_BASH="${EXECWRAP_REAL_BASH:-/bin/bash}"
 
@@ -488,6 +488,18 @@ _run_execsec_layers() {
   fi
 }
 
+_resolve_rtk_bin() {
+  if [[ -n "$FEAT_RTK_PATH" && "$FEAT_RTK_PATH" != "null" && -x "$PROJECT_DIR/$FEAT_RTK_PATH" ]]; then
+    echo "$PROJECT_DIR/$FEAT_RTK_PATH"
+  elif [[ -x "$EXECWRAP_DIR/../.exec/rtk" ]]; then
+    echo "$EXECWRAP_DIR/../.exec/rtk"
+  elif [[ -x "$EXECWRAP_DIR/rtk" ]]; then
+    echo "$EXECWRAP_DIR/rtk"
+  elif command -v rtk &>/dev/null; then
+    command -v rtk
+  fi
+}
+
 # =============================================================================
 # RTK OUTPUT COMPRESSION
 # Rewrites commands through RTK for token-optimized output when the result
@@ -504,15 +516,8 @@ _rtk_rewrite() {
   local cmd="$1"
   [[ "$FEAT_RTK_ENABLED" != "true" ]] && echo "$cmd" && return 0
 
-  # Resolve RTK binary: configured path, .exec/rtk, or PATH
-  local rtk_bin=""
-  if [[ -n "$FEAT_RTK_PATH" && "$FEAT_RTK_PATH" != "null" && -x "$PROJECT_DIR/$FEAT_RTK_PATH" ]]; then
-    rtk_bin="$PROJECT_DIR/$FEAT_RTK_PATH"
-  elif [[ -x "$EXECWRAP_DIR/rtk" ]]; then
-    rtk_bin="$EXECWRAP_DIR/rtk"
-  elif command -v rtk &>/dev/null; then
-    rtk_bin="$(command -v rtk)"
-  fi
+  local rtk_bin
+  rtk_bin="$(_resolve_rtk_bin)"
 
   if [[ -z "$rtk_bin" ]]; then
     _debug "RTK: binary not found, skipping compression"
@@ -641,6 +646,10 @@ if [[ "${1:-}" == "-c" ]]; then
   # Step 5: RTK output compression — rewrite command for token savings
   # Runs AFTER security (Layers 1-3) so denied commands never reach RTK.
   # Runs BEFORE execution so the LLM sees compressed output.
+  RTK_BIN="$(_resolve_rtk_bin)"
+  if [[ -n "$RTK_BIN" ]]; then
+    export PATH="$(dirname "$RTK_BIN"):$PATH"
+  fi
   CMD="$(_rtk_rewrite "$CMD")"
 
   # Step 6: Save adhoc scripts (bash -c, python -c, heredocs)
@@ -678,7 +687,7 @@ if [[ "${1:-}" == "-c" ]]; then
   fi
 
   if [[ -n "$LOG_FILE" ]]; then
-    exec "$REAL_BASH" -c "{ $CMD; } 2>&1 | tee '$LOG_FILE'"
+    exec "$REAL_BASH" -o pipefail -c "{ $CMD; } 2>&1 | tee '$LOG_FILE'"
   else
     exec "$REAL_BASH" -c "$CMD"
   fi

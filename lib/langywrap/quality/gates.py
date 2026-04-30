@@ -94,7 +94,11 @@ class QualityRunner:
             name = " ".join(gate[:2])
             cmd = gate
 
-        cmd = wrap_cmd(cmd, self.execwrap_path, self.rtk_path, shell_mode=True)
+        # Quality gates must preserve the command's exit status exactly. Execwrap
+        # may apply RTK internally while still running the shell command, but a
+        # direct RTK prefix can treat unsupported gate commands as successful.
+        rtk_path = self.rtk_path if self.execwrap_path else None
+        cmd = wrap_cmd(cmd, self.execwrap_path, rtk_path, shell_mode=True)
 
         start = time.monotonic()
         passed, output, returncode = run_subprocess(

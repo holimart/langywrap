@@ -86,3 +86,153 @@ class TestCLI:
         router = _build_router(tmp_path)
 
         assert router._backends[Backend.CLAUDE].binary_path == "/opt/bin/claude"
+
+    def test_openwolf_status_command_outputs_json(self, tmp_path, monkeypatch) -> None:
+        monkeypatch.setattr(
+            "langywrap.integrations.openwolf.openwolf_status",
+            lambda path: {"binary": "/bin/openwolf", "wolf_dir": str(path / ".wolf")},
+        )
+
+        result = CliRunner().invoke(main, ["integration", "openwolf", "status", str(tmp_path)])
+
+        assert result.exit_code == 0
+        assert '"binary": "/bin/openwolf"' in result.output
+
+    def test_openwolf_wire_command_passes_flags(self, tmp_path, monkeypatch) -> None:
+        captured = {}
+
+        def fake_wire(path, **kwargs):
+            captured["path"] = path
+            captured.update(kwargs)
+            return {"written": {"claude_settings": "x"}, "status": {}}
+
+        monkeypatch.setattr("langywrap.integrations.openwolf.wire_openwolf", fake_wire)
+
+        result = CliRunner().invoke(
+            main,
+            [
+                "integration",
+                "openwolf",
+                "wire",
+                str(tmp_path),
+                "--init",
+                "--no-opencode",
+                "--langywrap-only",
+            ],
+        )
+
+        assert result.exit_code == 0
+        assert captured == {
+            "path": tmp_path.resolve(),
+            "init": True,
+            "claude": True,
+            "opencode": False,
+            "langywrap_only": True,
+        }
+
+    def test_mcp_register_rejects_bad_env(self, tmp_path) -> None:
+        result = CliRunner().invoke(
+            main,
+            [
+                "mcp",
+                "register",
+                "--repo",
+                str(tmp_path),
+                "--name",
+                "srv",
+                "--command",
+                "python",
+                "--env",
+                "NOT_KEY_VALUE",
+            ],
+        )
+
+        assert result.exit_code != 0
+        assert "Invalid --env value" in result.output
+
+    def test_mcp_register_and_sync_commands(self, tmp_path, monkeypatch) -> None:
+        calls = {}
+
+        def fake_register(config_path, **kwargs):
+            calls["register"] = (config_path, kwargs)
+
+        def fake_sync(repo):
+            calls["sync"] = repo
+            return repo / ".mcp.json"
+
+        monkeypatch.setattr("langywrap.mcp_config.register_mcp_server", fake_register)
+        monkeypatch.setattr("langywrap.mcp_config.sync_langywrap_mcp_manifest", fake_sync)
+
+        runner = CliRunner()
+        reg = runner.invoke(
+            main,
+            [
+                "mcp",
+                "register",
+                "--repo",
+                str(tmp_path),
+                "--name",
+                "srv",
+                "--command",
+                "python",
+                "--arg",
+                "server.py",
+                "--env",
+                "A=B",
+            ],
+        )
+        sync = runner.invoke(main, ["mcp", "sync", "--repo", str(tmp_path)])
+
+        assert reg.exit_code == 0
+        assert sync.exit_code == 0
+        assert calls["register"][1]["env"] == {"A": "B"}
+        assert calls["sync"] == tmp_path.resolve()
+
+    def test_router_show_lists_steps(self, tmp_path, monkeypatch) -> None:
+        class FakeStep:
+            name = "orient"
+            model = "openai/gpt-test"
+            engine = "auto"
+            timeout_minutes = 7
+            retry_models = ["fallback"]
+
+        fake_cfg = type(
+            "Cfg",
+            (),
+            {"steps": [FakeStep()], "throttle_utc_start": None, "throttle_utc_end": None},
+        )()
+        monkeypatch.setattr("langywrap.ralph.config.load_ralph_config", lambda path: fake_cfg)
+
+        result = CliRunner().invoke(main, ["router", "show", str(tmp_path)])
+
+        assert result.exit_code == 0
+        assert "orient" in result.output
+        assert "fallback" in result.output
+
+    def test_router_test_filters_model(self, tmp_path, monkeypatch) -> None:
+        class FakeStep:
+            model = "wanted-model"
+            engine = "auto"
+            timeout_minutes = 1
+
+        fake_cfg = type("Cfg", (), {"steps": [FakeStep()]})()
+        monkeypatch.setattr("langywrap.ralph.config.load_ralph_config", lambda path: fake_cfg)
+
+        result_obj = type(
+            "DryRun",
+            (), {
+                "model": "wanted-model",
+                "backend": "mock",
+                "reachable": True,
+                "reason": "ok",
+                "detail": "",
+            },
+        )()
+        fake_router = type("Router", (), {"dry_run_detailed": lambda self, targets: [result_obj]})()
+        monkeypatch.setattr("langywrap.cli._build_router", lambda path: fake_router)
+
+        result = CliRunner().invoke(main, ["router", "test", "--model", "wanted", str(tmp_path)])
+
+        assert result.exit_code == 0
+        assert "wanted-model" in result.output
+        assert "OK" in result.output
