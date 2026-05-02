@@ -104,6 +104,37 @@ class TestCheckToken:
         assert RalphLoop._check_token("nope", "ORIENT_CONFIRMED:") is False
 
 
+class TestBuiltinSteps:
+    def test_builtin_orient_runs_without_router(self, tmp_path: Path):
+        loop = _make_loop(tmp_path)
+        loop.state.tasks_file.write_text(
+            "### [P1] Native task <!-- task:native -->\n**Status:** PENDING\n",
+            encoding="utf-8",
+        )
+        step = loop.config.steps[0].model_copy(update={"builtin": "orient"})
+
+        output, ok, result = loop.run_step(step, {"cycle_num": 1})
+
+        assert ok is True
+        assert result is None
+        assert "Native task" in output
+        assert "ORIENT_CONFIRMED: native_orient=true" in output
+
+    def test_dry_run_includes_builtin_preview(self, tmp_path: Path):
+        loop = _make_loop(tmp_path)
+        loop.state.tasks_file.write_text(
+            "### [P1] Native task <!-- task:native -->\n**Status:** PENDING\n",
+            encoding="utf-8",
+        )
+        loop.config.steps[0] = loop.config.steps[0].model_copy(update={"builtin": "orient"})
+
+        report = loop.dry_run()
+
+        assert report["steps"][0]["builtin"] == "orient"
+        assert "builtin_preview" in report["steps"][0]
+        assert "Native task" in report["steps"][0]["builtin_preview"]
+
+
 # ---------------------------------------------------------------------------
 # _check_depends_on
 # ---------------------------------------------------------------------------

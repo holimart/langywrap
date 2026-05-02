@@ -439,6 +439,8 @@ def _build_router(project_dir: Path) -> ExecutionRouter:  # noqa: F821
     used_backends: set[Backend] = set()
     max_step_timeout = 1800  # seconds
     for step in ralph_cfg.steps:
+        if step.builtin:
+            continue
         backend = _resolve_engine_backend(step.engine) or _infer_backend_from_model(step.model)
         used_backends.add(backend)
         max_step_timeout = max(max_step_timeout, step.timeout_minutes * 60)

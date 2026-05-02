@@ -557,6 +557,13 @@ class RalphLoop:
 
         Falls back to a stub if no router is available (useful for testing).
         """
+        if step.builtin:
+            output = self._run_builtin_step(step, cycle_context)
+            self._log(
+                f"  │   Builtin: {step.builtin} — produced {len(output):,} chars without LLM"
+            )
+            return output, True, None
+
         prompt = self.build_prompt(step, cycle_context)
         self._log(f"  │   Prompt:  {len(prompt):,} chars")
 
@@ -603,6 +610,15 @@ class RalphLoop:
                 return f"# {step.name} ERROR\n{exc}\n", False, None
 
         return f"# {step.name} FAILED after {max_attempts} attempts\n", False, None
+
+    def _run_builtin_step(self, step: StepConfig, cycle_context: dict) -> str:
+        """Run a native non-LLM step implementation."""
+        if step.builtin == "orient":
+            from langywrap.ralph.taskdb import TaskDB
+
+            db = TaskDB(self.config.project_dir, self.config.resolved_state_dir)
+            return db.render_orient(confirmation_token=step.confirmation_token)
+        raise ValueError(f"Unknown builtin step: {step.builtin}")
 
     def build_prompt(self, step: StepConfig, context: dict) -> str:
         """Load template file, inject project header + orient context + scope.
@@ -838,6 +854,7 @@ class RalphLoop:
         for step in self.config.steps:
             entry = {
                 "name": step.name,
+                "builtin": step.builtin,
                 "template": str(step.prompt_template),
                 "template_exists": step.prompt_template.exists(),
                 "template_size": (
@@ -846,6 +863,13 @@ class RalphLoop:
                 "timeout_minutes": step.timeout_minutes,
                 "confirmation_token": step.confirmation_token,
             }
+            if step.builtin:
+                try:
+                    preview = self._run_builtin_step(step, {"cycle_num": 0})
+                    entry["builtin_preview"] = preview[:4000]
+                    entry["builtin_preview_chars"] = len(preview)
+                except Exception as exc:
+                    entry["builtin_error"] = str(exc)
             report["steps"].append(entry)
 
         # Router + backends
@@ -869,6 +893,17 @@ class RalphLoop:
                 }
             # Show how each step would dispatch (resolved from Step fields alone).
             for step in self.config.steps:
+                if step.builtin:
+                    entry = {
+                        "step": step.name,
+                        "backend": "builtin",
+                        "builtin": step.builtin,
+                        "timeout_minutes": step.timeout_minutes,
+                    }
+                    if step.output_as:
+                        entry["output_as"] = step.output_as
+                    router_info["routing"].append(entry)
+                    continue
                 effective_model = step.model
                 effective_backend_enum = _resolve_engine_backend(
                     step.engine
@@ -886,7 +921,9 @@ class RalphLoop:
                     entry["output_as"] = step.output_as
                 router_info["routing"].append(entry)
             targets = [
-                (step.model, step.engine, step.timeout_minutes * 60) for step in self.config.steps
+                (step.model, step.engine, step.timeout_minutes * 60)
+                for step in self.config.steps
+                if not step.builtin
             ]
             router_info["connectivity"] = [
                 {

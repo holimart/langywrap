@@ -54,6 +54,10 @@ class StepConfig(BaseModel):
     engine: str = "auto"
     """Force engine: 'claude', 'opencode', or 'auto' (router decides)."""
 
+    builtin: str = ""
+    """Optional native non-LLM implementation name (e.g. 'orient').
+    Builtin steps skip prompt construction and router/model execution."""
+
     # -- Conditional execution -----------------------------------------------
 
     run_if_step: str = ""

@@ -75,6 +75,10 @@ class TestStep:
         s = Step("execute", model="kimi", fallback="sonnet")
         assert s.fallback == "sonnet"
 
+    def test_with_builtin(self):
+        s = Step("orient", builtin="orient")
+        assert s.builtin == "orient"
+
     def test_with_retry(self):
         s = Step("execute", retry=Retry(
             gate=Gate("./check.sh"),
@@ -245,6 +249,7 @@ class TestPipeline:
         assert len(cfg.steps) == 3
         assert cfg.steps[0].name == "orient"
         assert cfg.steps[0].model == "claude-haiku-4-5-20251001"
+
         assert cfg.steps[0].fail_fast is True
         assert cfg.steps[1].name == "execute"
         assert cfg.steps[1].model == "nvidia/moonshotai/kimi-k2.5"
@@ -258,6 +263,17 @@ class TestPipeline:
         assert cfg.throttle_utc_end == 19
         assert cfg.git_add_paths == ["src/"]
         assert cfg.scope_restriction == "Test scope"
+
+    def test_builtin_step_converts_to_step_config(self, tmp_path):
+        prompts = tmp_path / "prompts"
+        prompts.mkdir()
+        p = Pipeline(
+            prompts="prompts",
+            state="ralph",
+            steps=[Step("orient", builtin="orient")],
+        )
+        cfg = p.to_ralph_config(tmp_path)
+        assert cfg.steps[0].builtin == "orient"
 
     def test_cycle_types(self, tmp_path: Path):
         """Cycle type detection and per_cycle overrides."""

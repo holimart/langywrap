@@ -153,6 +153,7 @@ def _parse_flow_entry(
         model=model_id,
         tools=tools,
         engine=engine,
+        builtin=opts.get("builtin", ""),
         run_if_step=run_if_step,
         run_if_pattern=run_if_pattern,
         run_if_cycle_types=run_if_cycle_types,
@@ -453,5 +454,4 @@ def load_v2(raw: dict, project_dir: Path) -> RalphConfig:
         tasks_file=Path(raw["tasks_file"]) if raw.get("tasks_file") else None,
         progress_file=Path(raw["progress_file"]) if raw.get("progress_file") else None,
     )
-
 

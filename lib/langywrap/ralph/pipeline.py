@@ -256,6 +256,9 @@ class Step(BaseModel):
     engine: str = "auto"
     """Force engine: 'claude', 'opencode', or 'auto' (router decides)."""
 
+    builtin: str = ""
+    """Optional native non-LLM implementation name (e.g. 'orient')."""
+
     # -- Conditional execution -----------------------------------------------
 
     when: str = ""
@@ -917,6 +920,7 @@ class Pipeline(BaseModel):
             model=model_id,
             tools=tools,
             engine=step.engine,
+            builtin=step.builtin,
             retry_models=retry_chain,
             run_if_step=run_if_step,
             run_if_pattern=run_if_pattern,
