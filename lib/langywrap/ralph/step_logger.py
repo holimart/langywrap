@@ -27,7 +27,9 @@ Usage::
 from __future__ import annotations
 
 import contextlib
+import os
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -67,6 +69,9 @@ class StepLogger:
         self._stop_hb: threading.Event = threading.Event()
         # Most recently opened per-step log (used by close_step)
         self._current_step_log: Path | None = None
+        self._hb_pid_baseline: set[int] = set()
+        self._hb_cpu_ticks: dict[int, int] = {}
+        self._hb_last_proc_activity: float = 0.0
 
     # ------------------------------------------------------------------
     # Primary log method — replaces runner._log
@@ -129,6 +134,9 @@ class StepLogger:
         closes, so a 0B file does not imply a hang. We only warn when a log
         file exists and had prior live growth that then stalls.
         """
+        self._hb_pid_baseline = self._descendant_pids(os.getpid())
+        self._hb_cpu_ticks = {}
+        self._hb_last_proc_activity = time.monotonic()
         self._stop_hb.clear()
         self._heartbeat_thread = threading.Thread(
             target=self._heartbeat_loop,
@@ -199,6 +207,7 @@ class StepLogger:
         while not self._stop_hb.wait(timeout=self.HEARTBEAT_INTERVAL_S):
             elapsed_s += self.HEARTBEAT_INTERVAL_S
             minutes = elapsed_s // 60
+            proc_hint = self._subprocess_hint()
 
             try:
                 size = log_path.stat().st_size
@@ -210,12 +219,129 @@ class StepLogger:
                 saw_live_output = True
 
             if size == 0:
-                self.log(f"  [heartbeat {minutes}m] still running — no live step-log output yet")
+                if proc_hint:
+                    self.log(f"  [heartbeat {minutes}m] still running — {proc_hint}")
+                else:
+                    self.log(
+                        f"  [heartbeat {minutes}m] still running — no live step-log output yet"
+                    )
             elif delta == 0 and saw_live_output and elapsed_s > self.HEARTBEAT_INTERVAL_S:
-                self.log(
-                    f"  [heartbeat {minutes}m] WARNING live output stalled — "
-                    f"{step_name} may be hung ({size:,}B)"
-                )
+                if proc_hint and (
+                    "waiting on subprocesses" in proc_hint or "likely waiting" in proc_hint
+                ):
+                    self.log(
+                        f"  [heartbeat {minutes}m] still running — no step-log growth; "
+                        f"{proc_hint} ({size:,}B)"
+                    )
+                else:
+                    self.log(
+                        f"  [heartbeat {minutes}m] WARNING live output stalled — "
+                        f"{step_name} may be hung ({size:,}B)"
+                    )
+                    if proc_hint:
+                        self.log(f"  [heartbeat {minutes}m] hint: {proc_hint}")
             else:
-                self.log(f"  [heartbeat {minutes}m] still running — {size:,}B (+{delta:,}B)")
+                msg = f"  [heartbeat {minutes}m] still running — {size:,}B (+{delta:,}B)"
+                if delta == 0 and proc_hint:
+                    msg = f"{msg}; {proc_hint}"
+                self.log(msg)
             last_size = size
+
+    def _subprocess_hint(self) -> str:
+        snapshots = self._snapshot_descendants()
+        if not snapshots:
+            return ""
+
+        now = time.monotonic()
+        active = False
+        current_ticks: dict[int, int] = {}
+        summary: list[str] = []
+
+        for pid, name, state, cpu_ticks in snapshots:
+            prev = self._hb_cpu_ticks.get(pid)
+            current_ticks[pid] = cpu_ticks
+            if prev is None or cpu_ticks > prev:
+                active = True
+            if len(summary) < 3:
+                summary.append(f"{name}[{pid}:{state}]")
+
+        self._hb_cpu_ticks = current_ticks
+        if active:
+            self._hb_last_proc_activity = now
+            return f"waiting on subprocesses ({', '.join(summary)})"
+
+        idle_m = int((now - self._hb_last_proc_activity) // 60)
+        if idle_m >= 10:
+            return f"subprocesses appear idle for {idle_m}m ({', '.join(summary)})"
+        return f"subprocesses alive, likely waiting ({', '.join(summary)})"
+
+    def _snapshot_descendants(self) -> list[tuple[int, str, str, int]]:
+        rows: list[tuple[int, str, str, int]] = []
+        seen = set(self._hb_pid_baseline)
+        queue = list(self._descendant_pids(os.getpid()))
+        while queue:
+            pid = queue.pop()
+            if pid in seen:
+                continue
+            seen.add(pid)
+            snap = self._read_proc_snapshot(pid)
+            if snap is None:
+                continue
+            rows.append(snap)
+            queue.extend(self._children_of(pid))
+        return rows
+
+    def _descendant_pids(self, root_pid: int) -> set[int]:
+        out: set[int] = set()
+        queue = [root_pid]
+        while queue:
+            pid = queue.pop()
+            for child in self._children_of(pid):
+                if child in out:
+                    continue
+                out.add(child)
+                queue.append(child)
+        return out
+
+    def _children_of(self, pid: int) -> list[int]:
+        path = Path(f"/proc/{pid}/task/{pid}/children")
+        try:
+            raw = path.read_text(encoding="utf-8").strip()
+        except OSError:
+            return []
+        if not raw:
+            return []
+        children: list[int] = []
+        for token in raw.split():
+            with contextlib.suppress(ValueError):
+                children.append(int(token))
+        return children
+
+    def _read_proc_snapshot(self, pid: int) -> tuple[int, str, str, int] | None:
+        stat_path = Path(f"/proc/{pid}/stat")
+        cmd_path = Path(f"/proc/{pid}/cmdline")
+        try:
+            stat = stat_path.read_text(encoding="utf-8")
+        except OSError:
+            return None
+
+        close_idx = stat.rfind(")")
+        if close_idx == -1:
+            return None
+        rest = stat[close_idx + 2 :].split()
+        if len(rest) < 13:
+            return None
+
+        state = rest[0]
+        with contextlib.suppress(ValueError):
+            cpu_ticks = int(rest[11]) + int(rest[12])
+            name = "proc"
+            with contextlib.suppress(OSError):
+                cmdline = (
+                    cmd_path.read_bytes().replace(b"\x00", b" ").decode("utf-8", errors="replace")
+                )
+                cmdline = cmdline.strip()
+                if cmdline:
+                    name = Path(cmdline.split()[0]).name
+            return (pid, name, state, cpu_ticks)
+        return None

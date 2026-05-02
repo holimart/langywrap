@@ -133,6 +133,32 @@ class Match(BaseModel):
         super().__init__(source=source, rules=rules, **extra)
 
 
+class PlanDecision(BaseModel):
+    """Cycle type classifier — read an explicit planner decision field.
+
+    The planner writes a small structured block, for example::
+
+        orchestrator:
+          execute_type: lean
+
+    The runner reads ``execute_type`` directly instead of inferring from plan
+    prose. Missing, invalid, mixed, or undecided values fall back to
+    ``default``.
+    """
+
+    source: str = "plan"
+    """Step whose output contains the decision block."""
+
+    field: str = "execute_type"
+    """Planner field to read."""
+
+    allowed: list[str] = Field(default_factory=lambda: ["execute", "lean", "research"])
+    """Accepted route names."""
+
+    default: str = "execute"
+    """Route used when the field is missing, invalid, mixed, or undecided."""
+
+
 # ---------------------------------------------------------------------------
 # CycleOverride — per-cycle-type modifications
 # ---------------------------------------------------------------------------
@@ -262,7 +288,7 @@ class Step(BaseModel):
 
     # -- Cycle type detection ------------------------------------------------
 
-    detects_cycle: Match | None = None
+    detects_cycle: Match | PlanDecision | None = None
     """If set, this step's output is used to classify the cycle type."""
 
     per_cycle: dict[str, dict[str, str]] = Field(default_factory=dict)
@@ -566,14 +592,23 @@ class Pipeline(BaseModel):
 
             # Cycle type detection
             if step.detects_cycle:
-                # Match.source names the step whose output is matched.
-                # Default 'plan' preserves legacy behaviour; 'orient' lets
-                # branched plan steps gate on cycle type.
+                # Match.source / PlanDecision.source names the step whose
+                # output drives cycle type detection.
                 if step.detects_cycle.source:
                     cycle_type_source = step.detects_cycle.source
-                for name, pattern in step.detects_cycle.rules.items():
-                    rule: dict[str, str] = {"name": name, "pattern": pattern}
-                    cycle_type_rules.append(rule)
+                if isinstance(step.detects_cycle, PlanDecision):
+                    cycle_type_rules.append(
+                        {
+                            "name": "__plan_decision__",
+                            "field": step.detects_cycle.field,
+                            "allowed": "|".join(step.detects_cycle.allowed),
+                            "default": step.detects_cycle.default,
+                        }
+                    )
+                else:
+                    for name, pattern in step.detects_cycle.rules.items():
+                        rule: dict[str, str] = {"name": name, "pattern": pattern}
+                        cycle_type_rules.append(rule)
 
             # Collect per_cycle overrides into cycle_type_rules
             if step.per_cycle:

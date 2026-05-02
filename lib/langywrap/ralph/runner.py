@@ -1428,6 +1428,27 @@ class RalphLoop:
         if not text:
             return ""
 
+        decision_rules = [r for r in rules if r.get("field")]
+        if decision_rules:
+            rule = decision_rules[-1]
+            field = rule.get("field", "execute_type")
+            default = rule.get("default", "execute") or "execute"
+            allowed = {
+                item.strip().lower()
+                for item in rule.get("allowed", "execute|lean|research").split("|")
+                if item.strip()
+            }
+            decision = self._extract_plan_decision_field(text, field).lower()
+            if decision in {"mixed", "undecided", "unknown", "default", ""}:
+                return default
+            if decision in allowed:
+                return decision
+            self._log(
+                f"  Planner decision {field}={decision!r} is invalid; "
+                f"using default cycle type {default!r}"
+            )
+            return default
+
         best = ""
         for rule in rules:
             pattern = rule.get("pattern", "")
@@ -1435,6 +1456,20 @@ class RalphLoop:
                 best = rule.get("name", "")
 
         return best
+
+    @staticmethod
+    def _extract_plan_decision_field(text: str, field: str) -> str:
+        """Read a simple YAML-ish planner decision field from plan output."""
+        field_re = re.escape(field)
+        patterns = [
+            rf"(?im)^\s*{field_re}\s*:\s*['\"]?([A-Za-z0-9_-]+)['\"]?\s*$",
+            rf"(?im)^\s*{field_re}\s*=\s*['\"]?([A-Za-z0-9_-]+)['\"]?\s*$",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, text)
+            if match:
+                return match.group(1).strip()
+        return ""
 
     # ------------------------------------------------------------------
     # Adversarial cycles

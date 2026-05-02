@@ -342,9 +342,7 @@ def _seed_opencode_auth(xdg_tmp: str) -> None:
             continue
         # Snap paths look like ~/snap/code/<rev>/.local/share/opencode/auth.json
         # (not ~/snap/code/<rev>/opencode/auth.json) — match the real layout.
-        snap_auths = sorted(
-            snap_root.glob("*/.local/share/opencode/auth.json"), reverse=True
-        )
+        snap_auths = sorted(snap_root.glob("*/.local/share/opencode/auth.json"), reverse=True)
         candidates.extend(snap_auths)
 
     merged: dict[str, Any] = {}
@@ -799,6 +797,11 @@ def _run_with_idle_watchdog(
     poll_interval = 5
     last_progress_log = t0
     progress_log_interval = 30  # log output growth every 30s
+    last_idle_deferral_log = t0
+    idle_grace_started: float | None = None
+    child_cpu_prev: dict[int, int] = {}
+    last_child_activity = t0
+    last_child_summary = ""
 
     while proc.poll() is None:
         time.sleep(poll_interval)
@@ -838,8 +841,43 @@ def _run_with_idle_watchdog(
                 )
             last_progress_log = now
 
+        child_cpu_now, child_active, child_count, child_summary = _sample_child_activity(
+            proc.pid,
+            child_cpu_prev,
+        )
+        child_cpu_prev = child_cpu_now
+        if child_active:
+            last_child_activity = now
+            idle_grace_started = None
+        if child_summary:
+            last_child_summary = child_summary
+
         # Idle hang check
         if idle_secs >= idle_hang_seconds:
+            child_idle_secs = now - last_child_activity
+            if child_count > 0 and child_idle_secs < idle_hang_seconds:
+                if now - last_idle_deferral_log >= progress_log_interval:
+                    logger.info(
+                        "Idle watchdog: output idle %ds but child process tree is active (%s)",
+                        int(idle_secs),
+                        child_summary or last_child_summary,
+                    )
+                    last_idle_deferral_log = now
+                continue
+
+            if child_count > 0 and child_idle_secs >= idle_hang_seconds:
+                if idle_grace_started is None:
+                    idle_grace_started = now
+                    logger.info(
+                        "Idle watchdog: child process tree appears idle (%s). "
+                        "Granting %ds grace before kill.",
+                        child_summary or last_child_summary,
+                        idle_hang_seconds,
+                    )
+                    continue
+                if now - idle_grace_started < idle_hang_seconds:
+                    continue
+
             idle_killed = True
             logger.info(
                 "Idle watchdog: no output for %ds (threshold %ds) — killing process",
@@ -870,6 +908,101 @@ def _run_with_idle_watchdog(
         idle_timeout=idle_killed,
         duration=duration,
     )
+
+
+def _sample_child_activity(
+    root_pid: int,
+    previous_cpu: dict[int, int],
+) -> tuple[dict[int, int], bool, int, str]:
+    """Return child cpu snapshot + activity flag for ``root_pid``.
+
+    Activity means at least one child is new or consumed additional CPU ticks
+    since the previous sample.
+    """
+    pids = _descendant_pids(root_pid)
+    if not pids:
+        return {}, False, 0, ""
+
+    current: dict[int, int] = {}
+    active = False
+    summary: list[str] = []
+
+    for pid in sorted(pids):
+        snap = _read_proc_snapshot(pid)
+        if snap is None:
+            continue
+        name, state, cpu_ticks = snap
+        current[pid] = cpu_ticks
+        prev = previous_cpu.get(pid)
+        if prev is None or cpu_ticks > prev:
+            active = True
+        if len(summary) < 3:
+            summary.append(f"{name}[{pid}:{state}]")
+
+    return current, active, len(current), ", ".join(summary)
+
+
+def _descendant_pids(root_pid: int) -> set[int]:
+    out: set[int] = set()
+    queue = [root_pid]
+    while queue:
+        pid = queue.pop()
+        for child in _children_of(pid):
+            if child in out:
+                continue
+            out.add(child)
+            queue.append(child)
+    return out
+
+
+def _children_of(pid: int) -> list[int]:
+    path = Path(f"/proc/{pid}/task/{pid}/children")
+    try:
+        raw = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return []
+    if not raw:
+        return []
+    children: list[int] = []
+    for token in raw.split():
+        try:
+            children.append(int(token))
+        except ValueError:
+            continue
+    return children
+
+
+def _read_proc_snapshot(pid: int) -> tuple[str, str, int] | None:
+    stat_path = Path(f"/proc/{pid}/stat")
+    cmd_path = Path(f"/proc/{pid}/cmdline")
+    try:
+        stat = stat_path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+
+    close_idx = stat.rfind(")")
+    if close_idx == -1:
+        return None
+    rest = stat[close_idx + 2 :].split()
+    if len(rest) < 13:
+        return None
+
+    state = rest[0]
+    try:
+        cpu_ticks = int(rest[11]) + int(rest[12])
+    except ValueError:
+        return None
+
+    name = "proc"
+    try:
+        cmdline = cmd_path.read_bytes().replace(b"\x00", b" ").decode("utf-8", errors="replace")
+        cmdline = cmdline.strip()
+        if cmdline:
+            name = Path(cmdline.split()[0]).name
+    except OSError:
+        pass
+
+    return name, state, cpu_ticks
 
 
 def _kill_proc(proc: subprocess.Popen, session_leader: bool) -> None:  # type: ignore[type-arg]

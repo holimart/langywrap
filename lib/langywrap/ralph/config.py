@@ -301,6 +301,8 @@ class RalphConfig(BaseModel):
     cycle_type_rules: list[dict[str, str]] = Field(default_factory=list)
     """Rules for classifying cycles based on a source step's output.
     Each dict: {"name": "lean", "pattern": "sorry.*fill|lean formali"}
+    or {"field": "execute_type", "allowed": "execute|lean|research", "default": "execute"}
+    for explicit planner decisions.
     Last matching rule wins. Used to set cycle_type which gates conditional
     steps via step.run_if_cycle_types. Pattern is case-insensitive regex
     matched against the source step's output (see ``cycle_type_source``)."""
