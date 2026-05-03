@@ -537,8 +537,11 @@ def _launch_in_tmux(session: str, project_dir: Path, keep_pane: bool) -> None:
     # (budget, resume, stub, --no-tmux — but not --tmux itself since we're inside now)
     skip_next = False
     capture = False
+    skip_config = False  # skip the first positional after "run" — already added above
     for arg in sys.argv[1:]:
         if arg in ("ralph", "run"):
+            if arg == "run":
+                skip_config = True
             capture = True
             continue
         if not capture:
@@ -552,6 +555,9 @@ def _launch_in_tmux(session: str, project_dir: Path, keep_pane: bool) -> None:
         if arg in ("--budget", "-n"):
             argv.append(arg)
             skip_next = True
+            continue
+        if skip_config and not arg.startswith("-"):
+            skip_config = False  # first positional = config path, already in argv
             continue
         argv.append(arg)
 
