@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import shlex
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import click
@@ -500,6 +503,71 @@ def _build_router(project_dir: Path) -> ExecutionRouter:  # noqa: F821
 
 
 # ---------------------------------------------------------------------------
+# tmux helpers
+# ---------------------------------------------------------------------------
+
+_TMUX_GUARD = "LANGYWRAP_IN_TMUX"
+
+
+def _tmux_session_name(project_dir: Path) -> str:
+    """Derive a stable tmux session name from the project directory."""
+    import re
+
+    name = project_dir.name or "ralph"
+    name = re.sub(r"[^a-zA-Z0-9_-]", "-", name)
+    return f"ralph-{name}"
+
+
+def _tmux_available() -> bool:
+    return shutil.which("tmux") is not None
+
+
+def _tmux_session_exists(session: str) -> bool:
+    result = subprocess.run(
+        ["tmux", "has-session", "-t", session],
+        capture_output=True,
+    )
+    return result.returncode == 0
+
+
+def _launch_in_tmux(session: str, project_dir: Path, keep_pane: bool) -> None:
+    """Spawn a detached tmux session running langywrap ralph run with guard set."""
+    argv = [sys.argv[0], "ralph", "run", str(project_dir)]
+    # Forward any extra args already on sys.argv after "run" and the config arg
+    # (budget, resume, stub, --no-tmux — but not --tmux itself since we're inside now)
+    skip_next = False
+    capture = False
+    for arg in sys.argv[1:]:
+        if arg in ("ralph", "run"):
+            capture = True
+            continue
+        if not capture:
+            continue
+        if arg == "--no-tmux":
+            continue
+        if skip_next:
+            argv.append(arg)
+            skip_next = False
+            continue
+        if arg in ("--budget", "-n"):
+            argv.append(arg)
+            skip_next = True
+            continue
+        argv.append(arg)
+
+    # Add the guard so the child doesn't re-spawn
+    env_prefix = f"{_TMUX_GUARD}=1"
+    cmd_str = f"{env_prefix} {shlex.join(argv)}"
+    if keep_pane:
+        cmd_str += r"; status=$?; printf '\nRalph finished (exit %s). Press Ctrl-D to close.\n' \"$status\"; exec bash -i"
+
+    subprocess.run(
+        ["tmux", "new-session", "-d", "-s", session, "-x", "220", "-y", "50", cmd_str],
+        check=True,
+    )
+
+
+# ---------------------------------------------------------------------------
 # ralph
 # ---------------------------------------------------------------------------
 
@@ -515,9 +583,44 @@ def ralph() -> None:
 @click.option("--budget", "-n", type=int, default=None, help="Max cycles.")
 @click.option("--resume", is_flag=True, help="Resume from last cycle.")
 @click.option("--stub", is_flag=True, help="Run in stub mode (no AI calls).")
-def ralph_run(config: str, dry_run: bool, budget: int | None, resume: bool, stub: bool) -> None:
-    """Start a ralph loop run from a config file or project dir."""
+@click.option("--no-tmux", is_flag=True, help="Run directly in current shell (skip tmux).")
+@click.option("--no-keep-pane", is_flag=True, help="Close tmux pane immediately on exit.")
+def ralph_run(
+    config: str,
+    dry_run: bool,
+    budget: int | None,
+    resume: bool,
+    stub: bool,
+    no_tmux: bool,
+    no_keep_pane: bool,
+) -> None:
+    """Start a ralph loop run from a config file or project dir.
+
+    By default spawns (or reuses) a tmux session named ralph-<project> and
+    keeps the pane open after the loop exits so you can inspect output.
+    Use --no-tmux to run directly in the current shell.
+    """
     project_dir = Path(config).resolve()
+
+    # tmux dispatch — skip if: already inside tmux guard, --no-tmux, dry-run,
+    # already in a tmux session (TMUX env set), or tmux not available.
+    in_guard = os.environ.get(_TMUX_GUARD) == "1"
+    in_tmux_session = bool(os.environ.get("TMUX"))
+    use_tmux = not no_tmux and not dry_run and not in_guard and not in_tmux_session
+
+    if use_tmux:
+        if not _tmux_available():
+            click.echo("tmux not found — running directly.", err=True)
+        else:
+            session = _tmux_session_name(project_dir if project_dir.is_dir() else project_dir.parent)
+            if _tmux_session_exists(session):
+                click.echo(f"Already running in tmux session '{session}'.")
+                click.echo(f"Attach with:  tmux attach -t {session}")
+                return
+            _launch_in_tmux(session, project_dir, keep_pane=not no_keep_pane)
+            click.echo(f"Started tmux session '{session}'.")
+            click.echo(f"Attach with:  tmux attach -t {session}")
+            return
     if project_dir.is_file():
         project_dir = project_dir.parent
 
