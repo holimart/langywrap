@@ -61,7 +61,7 @@ _MODEL_ALIASES: dict[str, str] = {
     "haiku": "claude-haiku-4-5-20251001",
     "sonnet": "claude-sonnet-4-6",
     "opus": "claude-opus-4-6",
-    "kimi": "nvidia/moonshotai/kimi-k2.5",
+    "kimi": "nvidia/moonshotai/kimi-k2.6",
     "gemma4": "openrouter/google/gemma-4-31b-it",
     "gemma4-nvidia": "nvidia/google/gemma-4-31b-it",
     "gemma4-openrouter": "openrouter/google/gemma-4-31b-it:free",
@@ -924,11 +924,17 @@ class ModuleRunner:
 
     @staticmethod
     def _extract_first_meaningful_line(text: str) -> str:
+        in_fence = False
         for raw_line in text.splitlines():
             line = raw_line.strip()
             if not line:
                 continue
-            if line in {"---", "```"}:
+            if re.fullmatch(r"```\w*", line):
+                in_fence = not in_fence
+                continue
+            if in_fence:
+                continue
+            if line == "---":
                 continue
             if line.startswith(("#", "<", "{")):
                 continue
@@ -941,6 +947,7 @@ class ModuleRunner:
 
             line = re.sub(r"^[-*+]\s+", "", line)
             line = re.sub(r"^\d+\.\s+", "", line)
+            line = re.sub(r"^\*\*([^*]+):\*\*\s*", r"\1: ", line)
             line = re.sub(r"^[*_`]+|[*_`]+$", "", line).strip()
             if line:
                 return line[:72]

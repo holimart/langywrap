@@ -1715,11 +1715,17 @@ class RalphLoop:
     @staticmethod
     def _extract_first_meaningful_line(text: str) -> str:
         """Skip markdown boilerplate and transport noise when summarizing."""
+        in_fence = False
         for raw_line in text.splitlines():
             line = raw_line.strip()
             if not line:
                 continue
-            if line in {"---", "```"}:
+            if re.fullmatch(r"```\w*", line):
+                in_fence = not in_fence
+                continue
+            if in_fence:
+                continue
+            if line == "---":
                 continue
             if line.startswith(("#", "<", "{")):
                 continue
@@ -1732,6 +1738,7 @@ class RalphLoop:
 
             line = re.sub(r"^[-*+]\s+", "", line)
             line = re.sub(r"^\d+\.\s+", "", line)
+            line = re.sub(r"^\*\*([^*]+):\*\*\s*", r"\1: ", line)
             line = re.sub(r"^[*_`]+|[*_`]+$", "", line).strip()
             if line:
                 return line[:72]

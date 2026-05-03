@@ -235,6 +235,19 @@ class TestExtractPlanSummary:
         result = loop._extract_plan_summary()
         assert result == "Actual summary text here"
 
+    def test_skips_markdown_code_fence_language(self, tmp_path):
+        loop = _make_loop(tmp_path)
+        loop.state.plan_file.write_text(
+            "# Cycle 1 Plan\n\n"
+            "```yaml\n"
+            "orchestrator:\n"
+            "  execute_type: research\n"
+            "```\n\n"
+            "**Task:** task:jacobi-spectral-count\n"
+        )
+        result = loop._extract_plan_summary()
+        assert result == "Task: task:jacobi-spectral-count"
+
     def test_truncates_at_72_chars(self, tmp_path):
         loop = _make_loop(tmp_path)
         long_line = "A" * 100
