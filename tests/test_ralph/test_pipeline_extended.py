@@ -360,7 +360,7 @@ class TestStepRoutingPropagation:
         assert len(cfg.steps) == 2
         models = {s.name: s.model for s in cfg.steps}
         assert "haiku" in models["orient"]
-        assert models["execute"] == "nvidia/moonshotai/kimi-k2.5"
+        assert models["execute"] == "nvidia/moonshotai/kimi-k2.6"
 
     def test_loop_steps_flattened_into_config(self, tmp_path):
         p = Pipeline(

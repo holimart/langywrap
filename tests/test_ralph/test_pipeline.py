@@ -29,7 +29,7 @@ class TestModelAliases:
         assert _resolve_model("haiku") == "claude-haiku-4-5-20251001"
         assert _resolve_model("sonnet") == "claude-sonnet-4-6"
         assert _resolve_model("opus") == "claude-opus-4-6"
-        assert _resolve_model("kimi") == "nvidia/moonshotai/kimi-k2.5"
+        assert _resolve_model("kimi") == "nvidia/moonshotai/kimi-k2.6"
 
     def test_passthrough(self):
         assert _resolve_model("openai/gpt-5.2") == "openai/gpt-5.2"
@@ -252,7 +252,7 @@ class TestPipeline:
 
         assert cfg.steps[0].fail_fast is True
         assert cfg.steps[1].name == "execute"
-        assert cfg.steps[1].model == "nvidia/moonshotai/kimi-k2.5"
+        assert cfg.steps[1].model == "nvidia/moonshotai/kimi-k2.6"
         assert cfg.steps[1].timeout_minutes == 120
         assert cfg.steps[1].retry_count == 1  # from fallback
         assert cfg.steps[1].retry_model == "claude-sonnet-4-6"
@@ -303,7 +303,7 @@ class TestPipeline:
         assert len(cfg.cycle_type_rules) == 2
         lean_rule = next(r for r in cfg.cycle_type_rules if r["name"] == "lean")
         assert lean_rule["pattern"] == r"sorry.*fill"
-        assert lean_rule["model"] == "nvidia/moonshotai/kimi-k2.5"
+        assert lean_rule["model"] == "nvidia/moonshotai/kimi-k2.6"
 
     def test_retry_config(self, tmp_path: Path):
         """Retry block → StepConfig retry fields."""
@@ -332,7 +332,7 @@ class TestPipeline:
         step = cfg.steps[0]
         assert step.retry_count == 5
         assert step.retry_gate_command == "./check.sh"
-        assert step.retry_model == "nvidia/moonshotai/kimi-k2.5"
+        assert step.retry_model == "nvidia/moonshotai/kimi-k2.6"
         assert step.retry_prompt_template == prompts_dir / "retry.md"
         assert step.retry_if_cycle_types == ["lean"]
 
@@ -549,5 +549,5 @@ class TestStepDispatchInfo:
         by_name = {s.name: s for s in cfg.steps}
 
         assert by_name["orient"].model == "claude-haiku-4-5-20251001"
-        assert by_name["execute"].model == "nvidia/moonshotai/kimi-k2.5"
+        assert by_name["execute"].model == "nvidia/moonshotai/kimi-k2.6"
         assert "claude-sonnet-4-6" in by_name["execute"].retry_models

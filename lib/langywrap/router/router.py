@@ -593,7 +593,7 @@ class ExecutionRouter:
                 result = backend.run(
                     prompt=ping_prompt,
                     model=model,
-                    timeout=min(60, timeout_s),
+                    timeout=min(180, timeout_s),
                 )
                 reachable = result.ok and (
                     "PONG" in result.text.upper()

@@ -18,7 +18,7 @@ BUILTIN_ALIASES: dict[str, str] = {
     "sonnet": "claude-sonnet-4-6",
     "opus":   "claude-opus-4-6",
     # Kimi (via NVIDIA NIM)
-    "kimi":   "nvidia/moonshotai/kimi-k2.5",
+    "kimi":   "nvidia/moonshotai/kimi-k2.6",
     # Gemma 4 variants
     "gemma4":            "openrouter/google/gemma-4-31b-it",
     "gemma4-nvidia":     "nvidia/google/gemma-4-31b-it",
