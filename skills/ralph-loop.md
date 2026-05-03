@@ -478,14 +478,14 @@ rules:
     retry_models: [claude-haiku-4-5-20251001]
     retry_max: 2
   - role: execute
-    model: nvidia/moonshotai/kimi-k2.5   # was MODEL_EXECUTE
+    model: nvidia/moonshotai/kimi-k2.6   # was MODEL_EXECUTE
     backend: opencode            # nvidia/* prefix → opencode
     tier: cheap
     timeout_minutes: 120         # was TIMEOUT_EXECUTE
     retry_models: [sonnet]       # was MODEL_FALLBACK
     retry_max: 2
   - role: finalize
-    model: nvidia/moonshotai/kimi-k2.5   # was MODEL_LIGHT
+    model: nvidia/moonshotai/kimi-k2.6   # was MODEL_LIGHT
     backend: opencode
     tier: cheap
     timeout_minutes: 20          # was TIMEOUT_FINALIZE
@@ -4835,7 +4835,7 @@ run_execute_step() {
     ```
     This applies to both dry-run pings and live execution. Without it, providers that fall back to env-var auth (e.g. OpenAI's `OPENAI_API_KEY`) will fail even when the key is in `.env`.
 
-11. **Model string prefix must match provider key in `opencode.json`.** The model string `nvidia/moonshotai/kimi-k2.5` means: provider key = `nvidia`, model ID = `moonshotai/kimi-k2.5`. If you write `moonshotai/kimi-k2.5` (no `nvidia/` prefix), opencode looks for a provider keyed `moonshotai` which doesn't exist → timeout/404. Always use `providerKey/modelId` format.
+11. **Model string prefix must match provider key in `opencode.json`.** The model string `nvidia/moonshotai/kimi-k2.6` means: provider key = `nvidia`, model ID = `moonshotai/kimi-k2.6`. If you write `moonshotai/kimi-k2.6` (no `nvidia/` prefix), opencode looks for a provider keyed `moonshotai` which doesn't exist → timeout/404. Always use `providerKey/modelId` format.
 
 12. **`tool_call: true` required in `opencode.json` for tool-using models.** Models that need function-calling (all non-trivial steps) must have `"tool_call": true` in their model entry in `~/.config/opencode/opencode.json`. Without it the model receives no tools and cannot read/write files. This is NOT the default.
 

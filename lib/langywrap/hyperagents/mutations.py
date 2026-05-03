@@ -37,7 +37,7 @@ AVAILABLE_MODELS = [
     "claude-haiku-4-5-20251001",
     "claude-sonnet-4-6",
     "claude-opus-4-6",
-    "nvidia/moonshotai/kimi-k2.5",
+    "nvidia/moonshotai/kimi-k2.6",
     "nvidia/deepseek/deepseek-r1",
     "openai/gpt-4o",
     "openai/gpt-5.2",

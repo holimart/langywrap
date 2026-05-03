@@ -33,10 +33,21 @@
 
 set -euo pipefail
 
-# Resolve paths robustly even when called as $SHELL
-EXECWRAP_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
-PROJECT_DIR="${EXECWRAP_PROJECT_DIR:-$(cd "$EXECWRAP_DIR/.." && pwd)}"
-SETTINGS="$EXECWRAP_DIR/settings.json"
+# Resolve paths robustly even when called as $SHELL.
+#
+# Downstream projects symlink .exec/execwrap.bash to this file so wrapper updates
+# propagate. In that mode, code should come from langywrap, but configuration
+# should come from the downstream project when .exec/settings.json exists.
+EXECWRAP_REAL_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+EXECWRAP_INVOKED_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="${EXECWRAP_PROJECT_DIR:-$(cd "$EXECWRAP_INVOKED_DIR/.." && pwd)}"
+PROJECT_EXECWRAP_DIR="$PROJECT_DIR/.exec"
+EXECWRAP_DIR="$EXECWRAP_REAL_DIR"
+if [[ -f "$PROJECT_EXECWRAP_DIR/settings.json" ]]; then
+  SETTINGS="$PROJECT_EXECWRAP_DIR/settings.json"
+else
+  SETTINGS="$EXECWRAP_REAL_DIR/settings.json"
+fi
 REAL_BASH="${EXECWRAP_REAL_BASH:-/bin/bash}"
 
 # =============================================================================

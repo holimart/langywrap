@@ -233,7 +233,7 @@ C) Optional subpackage — `pip install langywrap[lean]`
 ## Cross-Cutting Concerns
 
 ### Model Routing Architecture
-All three ralph loops implement the same pattern: cheap models (kimi-k2.5, minimax) for execution, mid-range (haiku, sonnet) for planning, expensive (opus, gpt-5.2) for review. This should be a first-class abstraction:
+All three ralph loops implement the same pattern: cheap models (kimi-k2.6, minimax) for execution, mid-range (haiku, sonnet) for planning, expensive (opus, gpt-5.2) for review. This should be a first-class abstraction:
 
 ```python
 class ModelRouter:

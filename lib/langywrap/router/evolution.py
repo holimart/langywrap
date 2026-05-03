@@ -56,14 +56,14 @@ class ModelTier(str, Enum):
 _MODELS_BY_TIER: dict[ModelTier, list[str]] = {
     ModelTier.CHEAP: [
         "claude-haiku-4-5-20251001",
-        "openrouter/moonshotai/kimi-k2.5",
+        "openrouter/moonshotai/kimi-k2.6",
         "openrouter/mistralai/mistral-nemo",
         "openrouter/google/gemini-flash-1.5",
         "openrouter/meta-llama/llama-3.1-8b-instruct:free",
     ],
     ModelTier.MID: [
         "claude-sonnet-4-6",
-        "openrouter/moonshotai/kimi-k2.5",
+        "openrouter/moonshotai/kimi-k2.6",
         "openrouter/mistralai/mistral-large-2411",
         "openrouter/google/gemini-pro-1.5",
         "openrouter/nvidia/llama-3.1-nemotron-70b-instruct",

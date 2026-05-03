@@ -978,6 +978,11 @@ class RalphLoop:
         env_overrides = {
             "LANGYWRAP_OPENWOLF": "1",
             "EXECWRAP_PROJECT_DIR": str(self.config.project_dir),
+            # The mock probe intentionally runs many tiny shell builtins. Let
+            # execwrap launcher mode set SHELL/BASH_ENV, but skip the nested
+            # DEBUG trap or each printf/command-v pays full security preflight
+            # cost and can exceed the 10s dry-run budget.
+            "__EXECWRAP_ACTIVE": "1",
             "MOCK_COMMAND": mock_command,
         }
         discovered_dirs: list[str] = []

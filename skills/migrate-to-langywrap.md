@@ -68,8 +68,8 @@ Read the entire bash ralph loop script. Extract these values into a structured s
 | Config Key | Where to Find | Example |
 |---|---|---|
 | `MODEL_ORIENT` | Variable near top | `sonnet` |
-| `MODEL_EXECUTE` | Variable near top | `nvidia/moonshotai/kimi-k2.5` |
-| `MODEL_LIGHT` / `MODEL_FINALIZE` | Variable near top | `nvidia/moonshotai/kimi-k2.5` |
+| `MODEL_EXECUTE` | Variable near top | `nvidia/moonshotai/kimi-k2.6` |
+| `MODEL_LIGHT` / `MODEL_FINALIZE` | Variable near top | `nvidia/moonshotai/kimi-k2.6` |
 | `MODEL_REVIEW` | Variable near top | `sonnet` |
 | `MODEL_FALLBACK` | Variable near top | `sonnet` |
 | `TIMEOUT_ORIENT` | Variable near top | `30` |

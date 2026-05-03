@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import stat
+import subprocess
 
 import pytest
 from langywrap.router.backends import (
@@ -20,6 +21,7 @@ from langywrap.router.backends import (
     _build_env,
     _resolve_api_key,
     _resolve_binary,
+    _sample_process_activity,
     create_backend,
     wrap_cmd,
 )
@@ -74,6 +76,40 @@ def test_subagent_result_token_estimate_min_one():
 def test_subagent_result_hung_via_idle_timeout():
     r = make_result(exit_code=0, idle_timeout=True)
     assert r.hung is True
+
+
+def test_sample_process_activity_includes_root_process():
+    proc = subprocess.Popen(["/bin/sh", "-c", "sleep 2"])
+    try:
+        snapshot, active, count, summary = _sample_process_activity(proc.pid, {})
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+
+    assert proc.pid in snapshot
+    assert active is True
+    assert count >= 1
+    assert "sh" in summary or "sleep" in summary
+
+
+def test_sample_process_activity_reports_live_sleeping_root_on_repeat():
+    proc = subprocess.Popen(["/bin/sh", "-c", "sleep 2"])
+    try:
+        snapshot, _, _, _ = _sample_process_activity(proc.pid, {})
+        _, active, count, summary = _sample_process_activity(proc.pid, snapshot)
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+
+    assert active is False
+    assert count >= 1
+    assert "sh" in summary or "sleep" in summary
 
 
 def test_subagent_result_hung_via_size_heuristic():

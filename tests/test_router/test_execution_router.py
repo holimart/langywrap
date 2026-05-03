@@ -284,11 +284,11 @@ def test_dry_run_detailed_detects_opencode_model_not_configured(tmp_path):
         backends={Backend.OPENCODE: BackendConfig(type=Backend.OPENCODE, binary_path=str(shim))},
         default_backend=Backend.OPENCODE,
     )
-    results = router.dry_run_detailed([("nvidia/moonshotai/kimi-k2.5", "opencode")])
+    results = router.dry_run_detailed([("nvidia/moonshotai/kimi-k2.6", "opencode")])
     assert len(results) == 1
     assert results[0].reachable is False
     assert results[0].reason == "model_not_configured"
-    assert "provider.nvidia.models.moonshotai/kimi-k2.5" in results[0].detail
+    assert "provider.nvidia.models.moonshotai/kimi-k2.6" in results[0].detail
 
 
 def test_classify_failed_result_detects_opencode_model_not_found():
@@ -296,7 +296,7 @@ def test_classify_failed_result_detects_opencode_model_not_found():
         text='ProviderModelNotFoundError: data: { providerID: "nvidia" }',
         exit_code=1,
         duration_seconds=0.1,
-        model_used="nvidia/moonshotai/kimi-k2.5",
+        model_used="nvidia/moonshotai/kimi-k2.6",
         backend_used=Backend.OPENCODE,
     )
     reason, _ = _classify_failed_result(result)
@@ -308,7 +308,7 @@ def test_classify_failed_result_detects_missing_key_auth():
         text="Missing API key for NVIDIA",
         exit_code=1,
         duration_seconds=0.1,
-        model_used="nvidia/moonshotai/kimi-k2.5",
+        model_used="nvidia/moonshotai/kimi-k2.6",
         backend_used=Backend.OPENCODE,
     )
     reason, _ = _classify_failed_result(result)

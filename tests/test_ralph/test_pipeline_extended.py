@@ -31,11 +31,11 @@ class TestInferBackend:
         assert _infer_backend("o3-turbo") == "direct_api"
 
     def test_openrouter_prefix(self):
-        assert _infer_backend("openrouter/moonshotai/kimi-k2.5") == "openrouter"
+        assert _infer_backend("openrouter/moonshotai/kimi-k2.6") == "openrouter"
 
     def test_unknown_returns_opencode(self):
         assert _infer_backend("kimi-k2") == "opencode"
-        assert _infer_backend("nvidia/moonshotai/kimi-k2.5") == "opencode"
+        assert _infer_backend("nvidia/moonshotai/kimi-k2.6") == "opencode"
 
 
 # ---------------------------------------------------------------------------

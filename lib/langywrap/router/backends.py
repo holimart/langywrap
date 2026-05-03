@@ -799,9 +799,9 @@ def _run_with_idle_watchdog(
     progress_log_interval = 30  # log output growth every 30s
     last_idle_deferral_log = t0
     idle_grace_started: float | None = None
-    child_cpu_prev: dict[int, int] = {}
-    last_child_activity = t0
-    last_child_summary = ""
+    process_cpu_prev: dict[int, int] = {}
+    last_process_activity = t0
+    last_process_summary = ""
 
     while proc.poll() is None:
         time.sleep(poll_interval)
@@ -820,9 +820,26 @@ def _run_with_idle_watchdog(
                 duration=now - t0,
             )
 
-        # Periodic progress log (INFO level)
+        process_cpu_now, process_active, process_count, process_summary = _sample_process_activity(
+            proc.pid,
+            process_cpu_prev,
+        )
+        process_cpu_prev = process_cpu_now
+        if process_count > 0:
+            # A live subprocess is valid activity for the idle watchdog. Some
+            # CLIs (notably opencode during long model calls) can sit in sleep
+            # state without producing bytes or CPU ticks while the provider is
+            # still working. Hard timeout still bounds total runtime.
+            last_process_activity = now
+            idle_grace_started = None
+        if process_summary:
+            last_process_summary = process_summary
+
+        # Periodic progress log (INFO level). Treat either output bytes or
+        # process-tree activity as valid progress for idle accounting.
         with lock:
-            idle_secs = now - last_byte_time
+            last_valid_activity = max(last_byte_time, last_process_activity)
+            idle_secs = now - last_valid_activity
             cur_bytes = total_bytes
         if now - last_progress_log >= progress_log_interval:
             elapsed = int(now - t0)
@@ -841,37 +858,26 @@ def _run_with_idle_watchdog(
                 )
             last_progress_log = now
 
-        child_cpu_now, child_active, child_count, child_summary = _sample_child_activity(
-            proc.pid,
-            child_cpu_prev,
-        )
-        child_cpu_prev = child_cpu_now
-        if child_active:
-            last_child_activity = now
-            idle_grace_started = None
-        if child_summary:
-            last_child_summary = child_summary
-
         # Idle hang check
         if idle_secs >= idle_hang_seconds:
-            child_idle_secs = now - last_child_activity
-            if child_count > 0 and child_idle_secs < idle_hang_seconds:
+            process_idle_secs = now - last_process_activity
+            if process_count > 0 and process_idle_secs < idle_hang_seconds:
                 if now - last_idle_deferral_log >= progress_log_interval:
                     logger.info(
-                        "Idle watchdog: output idle %ds but child process tree is active (%s)",
+                        "Idle watchdog: output idle %ds but process tree is active (%s)",
                         int(idle_secs),
-                        child_summary or last_child_summary,
+                        process_summary or last_process_summary,
                     )
                     last_idle_deferral_log = now
                 continue
 
-            if child_count > 0 and child_idle_secs >= idle_hang_seconds:
+            if process_count > 0 and process_idle_secs >= idle_hang_seconds:
                 if idle_grace_started is None:
                     idle_grace_started = now
                     logger.info(
                         "Idle watchdog: child process tree appears idle (%s). "
                         "Granting %ds grace before kill.",
-                        child_summary or last_child_summary,
+                        process_summary or last_process_summary,
                         idle_hang_seconds,
                     )
                     continue
@@ -910,16 +916,16 @@ def _run_with_idle_watchdog(
     )
 
 
-def _sample_child_activity(
+def _sample_process_activity(
     root_pid: int,
     previous_cpu: dict[int, int],
 ) -> tuple[dict[int, int], bool, int, str]:
-    """Return child cpu snapshot + activity flag for ``root_pid``.
+    """Return root+child cpu snapshot + activity flag for ``root_pid``.
 
-    Activity means at least one child is new or consumed additional CPU ticks
-    since the previous sample.
+    Activity means the root process or at least one child is new, changed
+    state, or consumed additional CPU ticks since the previous sample.
     """
-    pids = _descendant_pids(root_pid)
+    pids = {root_pid, *_descendant_pids(root_pid)}
     if not pids:
         return {}, False, 0, ""
 
@@ -932,9 +938,13 @@ def _sample_child_activity(
         if snap is None:
             continue
         name, state, cpu_ticks = snap
-        current[pid] = cpu_ticks
+        # Store state in the low bits by hashing the state string into the key
+        # value, so a process changing S/R/D/Z also counts as activity.
+        state_marker = ord(state[:1] or "?")
+        marker = cpu_ticks * 256 + state_marker
+        current[pid] = marker
         prev = previous_cpu.get(pid)
-        if prev is None or cpu_ticks > prev:
+        if prev is None or marker != prev:
             active = True
         if len(summary) < 3:
             summary.append(f"{name}[{pid}:{state}]")
@@ -1315,7 +1325,7 @@ class OpenRouterBackend:
     """
     Calls the OpenRouter chat completions API via httpx.
 
-    OpenRouter is used for free or cheap model access (e.g. kimi-k2.5,
+    OpenRouter is used for free or cheap model access (e.g. kimi-k2.6,
     mistral, gemini flash) without needing individual provider accounts.
 
     Requires: ``pip install httpx``

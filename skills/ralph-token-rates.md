@@ -217,7 +217,7 @@ Flag caveats explicitly:
 
 **Plausibility check:** if your computed *agent* output TPS is much below the published *decode* TPS, that's expected for a tool-heavy loop. If your *per-event max* output TPS is also far below published, you may have rate-limit throttling, a noisy shared endpoint, or a real provider regression — investigate.
 
-Sources for the table: [NIM model card](https://build.nvidia.com/moonshotai/kimi-k2.5/modelcard), [NIM API ref](https://docs.api.nvidia.com/nim/reference/moonshotai-kimi-k2-5), [Baseten Kimi K2.5](https://www.baseten.co/blog/how-we-built-the-fastest-kimi-k2-5-on-artificial-analysis/), [Artificial Analysis gpt-5.2](https://artificialanalysis.ai/models/gpt-5-2/providers), [llm-benchmarks gpt-5.2](https://llm-benchmarks.com/models/openai/gpt52), [OpenAI prompt caching](https://openai.com/index/api-prompt-caching/).
+Sources for the table: [NIM model card](https://build.nvidia.com/moonshotai/kimi-k2.6/modelcard), [NIM API ref](https://docs.api.nvidia.com/nim/reference/moonshotai-kimi-k2-6), [Baseten Kimi K2.6](https://www.baseten.co/blog/how-we-built-the-fastest-kimi-k2-on-artificial-analysis/), [Artificial Analysis gpt-5.2](https://artificialanalysis.ai/models/gpt-5-2/providers), [llm-benchmarks gpt-5.2](https://llm-benchmarks.com/models/openai/gpt52), [OpenAI prompt caching](https://openai.com/index/api-prompt-caching/).
 
 ## Expected shape of output
 

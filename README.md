@@ -137,9 +137,9 @@ Per-project config in `.langywrap/router.yaml`. Default routing:
 |------|-------|---------|
 | orient | claude-haiku-4-5 | claude |
 | plan | claude-sonnet-4-6 | claude |
-| execute | kimi-k2.5 | opencode (free) |
+| execute | kimi-k2.6 | opencode (free) |
 | critic | claude-haiku-4-5 | claude |
-| finalize | kimi-k2.5 | opencode (free) |
+| finalize | kimi-k2.6 | opencode (free) |
 | review (every 10th) | claude-opus-4-6 | claude |
 
 ### Ralph Loop
