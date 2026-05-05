@@ -103,6 +103,10 @@ class StepConfig(BaseModel):
     """If non-empty, retry loop only runs when detected cycle type is in this list.
     E.g. ['lean', 'mixed']. Empty = retry always (if retry_count > 0)."""
 
+    retry_gate_mode: str = "after"
+    """When to run the first gate check: ``"before"`` skips the LLM if the gate
+    already passes; ``"after"`` (default) always runs the LLM first."""
+
     # -- Pipeline control ----------------------------------------------------
 
     pipeline: bool = True

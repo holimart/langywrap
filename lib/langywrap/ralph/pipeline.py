@@ -196,7 +196,16 @@ class Retry(BaseModel):
     """
 
     gate: Gate | None = None
-    """Gate command to check after each attempt. If passes, stop retrying."""
+    """Gate command run around each LLM attempt.
+
+    ``gate_mode`` controls when the first gate check happens:
+    - ``"after"``  (default) — run gate *after* the LLM; standard retry loop.
+    - ``"before"`` — run gate *before* the first LLM call; if it already
+      passes, skip the LLM entirely (useful for fix/lint steps that may be
+      no-ops)."""
+
+    gate_mode: str = "after"
+    """When to run the first gate check: ``"before"`` or ``"after"`` (default)."""
 
     attempts: int = 3
     """Maximum retry attempts."""
@@ -884,6 +893,7 @@ class Pipeline(BaseModel):
         # Retry config
         retry_count = 0
         retry_gate = ""
+        retry_gate_mode = "after"
         retry_model = ""
         retry_prompt: Path | None = None
         retry_cycles: list[str] = []
@@ -891,6 +901,7 @@ class Pipeline(BaseModel):
         if step.retry:
             retry_count = step.retry.attempts
             retry_gate = step.retry.gate.command if step.retry.gate else ""
+            retry_gate_mode = step.retry.gate_mode
             retry_model = resolve(step.retry.model) if step.retry.model else ""
             if step.retry.prompt:
                 retry_prompt = prompts_dir / step.retry.prompt
@@ -929,6 +940,7 @@ class Pipeline(BaseModel):
             prompt_extra=step.inject,
             retry_count=retry_count,
             retry_gate_command=retry_gate,
+            retry_gate_mode=retry_gate_mode,
             retry_model=retry_model,
             retry_prompt_template=retry_prompt,
             retry_if_cycle_types=retry_cycles,

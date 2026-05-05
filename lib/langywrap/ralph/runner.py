@@ -311,6 +311,9 @@ class RalphLoop:
                         f"{step.run_if_step} !~ /{step.run_if_pattern}/)\n"
                     )
                     continue
+                self._log(
+                    f"  │   When: {step.run_if_step} =~ /{step.run_if_pattern}/ → MET"
+                )
 
             # Cycle-type gating: skip step if cycle type doesn't match
             if step.run_if_cycle_types and cycle_type not in step.run_if_cycle_types:
@@ -1106,6 +1109,18 @@ class RalphLoop:
 
         If retry_if_cycle_types is set, retries only run when cycle_type matches.
         """
+        # Pre-gate: when gate_mode="before", run the gate first and skip the
+        # LLM entirely if it already passes (e.g. fix/lint steps that are no-ops).
+        if (
+            step.retry_count > 0
+            and step.retry_gate_command
+            and step.retry_gate_mode == "before"
+        ):
+            pre_pass, _ = self._run_gate_command(step.retry_gate_command)
+            if pre_pass:
+                self._log(f"    [{step.name}] Gate already passing — LLM skipped")
+                return "(gate passed pre-check — step skipped)", True, None
+
         output, success, sr = self.run_step(step, cycle_context)
 
         if step.retry_count <= 0 or not step.retry_gate_command:
