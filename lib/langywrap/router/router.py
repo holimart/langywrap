@@ -451,8 +451,19 @@ class ExecutionRouter:
             hang_streak = 0
 
             if result.timed_out:
+                if model_idx + 1 < len(model_chain):
+                    logger.warning(
+                        "[%s] Timeout on %s (%dB output). Advancing to fallback model %s.",
+                        label,
+                        current_model,
+                        len(result.raw_output),
+                        model_chain[model_idx + 1],
+                    )
+                    attempt += 1
+                    model_idx += 1
+                    continue
                 logger.warning(
-                    "[%s] Genuine timeout (%dB output). Not retrying.",
+                    "[%s] Genuine timeout (%dB output). No fallback — giving up.",
                     label,
                     len(result.raw_output),
                 )
