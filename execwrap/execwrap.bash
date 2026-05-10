@@ -657,12 +657,24 @@ if [[ "${1:-}" == "-c" ]]; then
   # Step 5: RTK output compression — rewrite command for token savings
   # Runs AFTER security (Layers 1-3) so denied commands never reach RTK.
   # Runs BEFORE execution so the LLM sees compressed output.
+  # If the matched Layer 1 rule has "rtk_exempt": true, skip RTK entirely.
+  SKIP_RTK=false
+  if [[ "$RULE_IDX" != "-1" ]]; then
+    RTK_EXEMPT="$(jq -r ".rules[$RULE_IDX].rtk_exempt // false" "$SETTINGS" 2>/dev/null || echo false)"
+    if [[ "$RTK_EXEMPT" == "true" ]]; then
+      SKIP_RTK=true
+      _debug "RTK exempt: rule index $RULE_IDX has rtk_exempt=true, skipping compression"
+    fi
+  fi
+
   RTK_BIN="$(_resolve_rtk_bin)"
   if [[ -n "$RTK_BIN" ]]; then
     export PATH="$(dirname "$RTK_BIN"):$PATH"
   fi
-  CMD="$(_rtk_rewrite "$CMD")"
 
+  if [[ "$SKIP_RTK" != "true" ]]; then
+    CMD="$(_rtk_rewrite "$CMD")"
+  fi
   # Step 6: Save adhoc scripts (bash -c, python -c, heredocs)
   # Must happen before debug banner so _ADHOC_SAVED_FILE is set
   _save_adhoc "$CMD"

@@ -445,6 +445,12 @@ class RalphLoop:
             out_path.write_text(output, encoding="utf-8")
             result.steps_completed[output_key] = out_path
 
+            # Mirror to state_dir/plan.md so `validates_plan` sees the freshly
+            # captured output. Without this, output_as="plan" lands in steps/
+            # but _validate_plan reads state_dir/plan.md → always stale.
+            if output_key == "plan":
+                self.state.write_plan(output)
+
             # Check confirmation token
             confirmed = success and self._check_token(output, step.confirmation_token)
             result.confirmed_tokens[output_key] = confirmed
@@ -482,6 +488,8 @@ class RalphLoop:
 
                     out_path.write_text(output, encoding="utf-8")
                     result.steps_completed[output_key] = out_path
+                    if output_key == "plan":
+                        self.state.write_plan(output)
                     confirmed = success and self._check_token(output, step.confirmation_token)
                     result.confirmed_tokens[output_key] = confirmed
 

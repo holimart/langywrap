@@ -15,4 +15,5 @@ scripts/adhoc/*.py
 !scripts/adhoc/README.md
 node_modules/
 *.lock
+graphify-in/
 graphify-out/

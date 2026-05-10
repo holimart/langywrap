@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 import click
 
@@ -380,7 +381,7 @@ def compound_search(query: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _build_router(project_dir: Path) -> ExecutionRouter:  # noqa: F821
+def _build_router(project_dir: Path, ralph_cfg: Any | None = None) -> ExecutionRouter:  # noqa: F821
     """Build an ExecutionRouter from project config, wiring backends + execwrap.
 
     Discovers:
@@ -412,7 +413,8 @@ def _build_router(project_dir: Path) -> ExecutionRouter:  # noqa: F821
                     os.environ[key] = val
 
     # Resolve the pipeline's step list — that's where model+engine live now.
-    ralph_cfg = load_ralph_config(project_dir)
+    if ralph_cfg is None:
+        ralph_cfg = load_ralph_config(project_dir)
 
     from langywrap.helpers.discovery import find_execwrap, find_rtk
 
@@ -552,7 +554,7 @@ def _launch_in_tmux(session: str, project_dir: Path, keep_pane: bool) -> None:
             argv.append(arg)
             skip_next = False
             continue
-        if arg in ("--budget", "-n"):
+        if arg in ("--budget", "-n", "--replace-model"):
             argv.append(arg)
             skip_next = True
             continue
@@ -565,7 +567,10 @@ def _launch_in_tmux(session: str, project_dir: Path, keep_pane: bool) -> None:
     env_prefix = f"{_TMUX_GUARD}=1"
     cmd_str = f"{env_prefix} {shlex.join(argv)}"
     if keep_pane:
-        cmd_str += r"; status=$?; printf '\nRalph finished (exit %s). Press Ctrl-D to close.\n' \"$status\"; exec bash -i"
+        cmd_str += (
+            r"; status=$?; printf '\nRalph finished (exit %s). "
+            r"Press Ctrl-D to close.\n' \"$status\"; exec bash -i"
+        )
 
     subprocess.run(
         ["tmux", "new-session", "-d", "-s", session, "-x", "220", "-y", "50", cmd_str],
@@ -591,6 +596,15 @@ def ralph() -> None:
 @click.option("--stub", is_flag=True, help="Run in stub mode (no AI calls).")
 @click.option("--no-tmux", is_flag=True, help="Run directly in current shell (skip tmux).")
 @click.option("--no-keep-pane", is_flag=True, help="Close tmux pane immediately on exit.")
+@click.option(
+    "--replace-model",
+    multiple=True,
+    metavar="FROM=TO",
+    help=(
+        "Replace configured models for this run. FROM may be an exact model/alias "
+        "or a shell glob, e.g. --replace-model '*kimi*=openai/gpt-5.3-codex'."
+    ),
+)
 def ralph_run(
     config: str,
     dry_run: bool,
@@ -599,6 +613,7 @@ def ralph_run(
     stub: bool,
     no_tmux: bool,
     no_keep_pane: bool,
+    replace_model: tuple[str, ...],
 ) -> None:
     """Start a ralph loop run from a config file or project dir.
 
@@ -618,7 +633,8 @@ def ralph_run(
         if not _tmux_available():
             click.echo("tmux not found — running directly.", err=True)
         else:
-            session = _tmux_session_name(project_dir if project_dir.is_dir() else project_dir.parent)
+            session_dir = project_dir if project_dir.is_dir() else project_dir.parent
+            session = _tmux_session_name(session_dir)
             if _tmux_session_exists(session):
                 click.echo(f"Already running in tmux session '{session}'.")
                 click.echo(f"Attach with:  tmux attach -t {session}")
@@ -629,6 +645,13 @@ def ralph_run(
             return
     if project_dir.is_file():
         project_dir = project_dir.parent
+
+    from langywrap.ralph.config import parse_model_substitutions
+
+    try:
+        model_substitutions = parse_model_substitutions(replace_model)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
 
     # Try Module-based pipeline first (forward() runner)
     from langywrap.ralph.module import ModuleRunner, load_module_config
@@ -653,6 +676,7 @@ def ralph_run(
             project_dir=project_dir,
             router=router,
             budget=budget or 10,
+            model_substitutions=model_substitutions,
         )
 
         if dry_run:
@@ -665,15 +689,19 @@ def ralph_run(
         return
 
     # Fall back to declarative Pipeline or YAML config
-    from langywrap.ralph.config import load_ralph_config
+    from langywrap.ralph.config import (
+        apply_model_substitutions,
+        load_ralph_config,
+    )
     from langywrap.ralph.runner import RalphLoop
 
     cfg = load_ralph_config(project_dir)
+    cfg = apply_model_substitutions(cfg, model_substitutions)
 
     router = None
     if not stub:
         try:
-            router = _build_router(project_dir)
+            router = _build_router(project_dir, ralph_cfg=cfg)
         except Exception as exc:
             if not dry_run:
                 raise

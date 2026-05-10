@@ -81,6 +81,20 @@
 
   "rules": [
     {
+      "id": "allow-ripgrep-passthrough",
+      "description": "Allow ripgrep (rg) commands through without RTK rewrite — RTK's grep handler drops rg-specific flags like --glob, --type, --pcre2",
+      "match": {
+        "glob": null,
+        "regex": "^(.+/)?rg(\\s|$)"
+      },
+      "action": "allow",
+      "rtk_exempt": true,
+      "tmux": null,
+      "enabled": true,
+      "_comment": "Prevents RTK from rewriting 'rg' to 'rtk grep'. RTK's grep wraps GNU grep which lacks ripgrep flags. The rtk_exempt field tells execwrap Step 5 to skip RTK compression for this command. Scan plans rely on rg --glob for file filtering."
+    },
+
+    {
       "id": "rewrite-python-to-uv",
       "description": "Rewrite any python/python3 invocation (bare or full path) to 'uv run python'",
       "match": {

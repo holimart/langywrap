@@ -16,9 +16,14 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-import pytest
 import langywrap.ralph.runner as runner_module
-from langywrap.ralph.config import RalphConfig, StepConfig
+import pytest
+from langywrap.ralph.config import (
+    RalphConfig,
+    StepConfig,
+    apply_model_substitutions,
+    parse_model_substitutions,
+)
 from langywrap.ralph.runner import RalphLoop
 from langywrap.ralph.state import CycleResult
 
@@ -65,6 +70,43 @@ def _make_result(**kwargs) -> CycleResult:
 # ---------------------------------------------------------------------------
 # _is_failed_cycle (static)
 # ---------------------------------------------------------------------------
+
+
+def test_model_substitution_rewrites_all_step_model_fields(tmp_path: Path):
+    step = StepConfig(
+        name="execute",
+        prompt_template=tmp_path / "execute.md",
+        model="nvidia/moonshotai/kimi-k2.6",
+        retry_model="nvidia/moonshotai/kimi-k2.6",
+        retry_models=["claude-sonnet-4-6", "nvidia/moonshotai/kimi-k2.6"],
+    )
+    cfg = RalphConfig(
+        project_dir=tmp_path,
+        steps=[step],
+        cycle_type_rules=[{"name": "lean", "model": "nvidia/moonshotai/kimi-k2.6"}],
+    )
+
+    substitutions = parse_model_substitutions(["*kimi*=openai/gpt-5.3-codex"])
+    updated = apply_model_substitutions(cfg, substitutions)
+
+    assert updated.steps[0].model == "openai/gpt-5.3-codex"
+    assert updated.steps[0].retry_model == "openai/gpt-5.3-codex"
+    assert updated.steps[0].retry_models == ["claude-sonnet-4-6", "openai/gpt-5.3-codex"]
+    assert updated.cycle_type_rules[0]["model"] == "openai/gpt-5.3-codex"
+
+
+def test_model_substitution_resolves_exact_source_alias(tmp_path: Path):
+    step = StepConfig(
+        name="execute",
+        prompt_template=tmp_path / "execute.md",
+        model="nvidia/moonshotai/kimi-k2.6",
+    )
+    cfg = RalphConfig(project_dir=tmp_path, steps=[step])
+
+    substitutions = parse_model_substitutions(["kimi=openai/gpt-5.3-codex"])
+    updated = apply_model_substitutions(cfg, substitutions)
+
+    assert updated.steps[0].model == "openai/gpt-5.3-codex"
 
 
 class TestIsFailedCycle:

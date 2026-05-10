@@ -48,6 +48,37 @@ class TestCLI:
         assert "status" in result.output
         assert "resume" in result.output
 
+    def test_ralph_run_dry_run_replaces_models(self, tmp_path) -> None:
+        cfg_dir = tmp_path / ".langywrap"
+        cfg_dir.mkdir()
+        prompts = tmp_path / "prompts"
+        prompts.mkdir()
+        (prompts / "execute.md").write_text("execute")
+        (cfg_dir / "ralph.yaml").write_text(
+            "models:\n"
+            "  execute: kimi\n"
+            "prompts: prompts\n"
+            "flow:\n"
+            "  - execute\n"
+        )
+
+        result = CliRunner().invoke(
+            main,
+            [
+                "ralph",
+                "run",
+                str(tmp_path),
+                "--dry-run",
+                "--no-tmux",
+                "--replace-model",
+                "kimi=openai/gpt-5.3-codex",
+            ],
+        )
+
+        assert result.exit_code == 0
+        assert "openai/gpt-5.3-codex" in result.output
+        assert "nvidia/moonshotai/kimi-k2.6" not in result.output
+
     def test_router_help(self) -> None:
         runner = CliRunner()
         result = runner.invoke(main, ["router", "--help"])

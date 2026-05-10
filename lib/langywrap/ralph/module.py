@@ -41,10 +41,11 @@ import logging
 import re
 import subprocess
 import time
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
+from langywrap.ralph.config import ModelSubstitution, substitute_model_name
 from langywrap.ralph.context import build_full_prompt, build_orient_context
 from langywrap.ralph.state import CycleResult, RalphState
 
@@ -220,6 +221,9 @@ class BoundStep:
             return self.output
 
         effective_model = _resolve_model(model or self._def.model)
+        runner = self._module._runner
+        if runner is not None:
+            effective_model = substitute_model_name(effective_model, runner.model_substitutions)
         effective_prompt = prompt or self._def.prompt
         effective_timeout = timeout or self._def.timeout
         effective_tools = tools or self._def.tools
@@ -611,11 +615,13 @@ class ModuleRunner:
         throttle_utc: str = "",
         throttle_weekdays_only: bool = True,
         periodic: list[dict[str, Any]] | None = None,
+        model_substitutions: list[ModelSubstitution] | None = None,
     ) -> None:
         self.module = module
         self.project_dir = project_dir.resolve()
         self.router = router
         self.budget = budget
+        self.model_substitutions = model_substitutions or []
 
         # State directory
         state_rel = module.state or "ralph"
@@ -752,7 +758,7 @@ class ModuleRunner:
                     prompt_path = candidate
                     break
             report["steps"][name] = {
-                "model": sd.model,
+                "model": substitute_model_name(_resolve_model(sd.model), self.model_substitutions),
                 "prompt": str(prompt_path),
                 "prompt_exists": prompt_path.exists(),
                 "timeout": sd.timeout,
@@ -991,7 +997,7 @@ class ModuleRunner:
             return
 
         while True:
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             if self._throttle_weekdays and now.weekday() >= 5:
                 return
             if start <= now.hour < end:

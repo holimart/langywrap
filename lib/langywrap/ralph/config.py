@@ -6,11 +6,14 @@ Declarative pipeline definition: steps, quality gates, git policy, and budget.
 
 from __future__ import annotations
 
+from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import Any
 
 import yaml
 from pydantic import BaseModel, Field
+
+from langywrap.ralph.aliases import BUILTIN_ALIASES
 
 # ---------------------------------------------------------------------------
 # StepConfig
@@ -375,6 +378,91 @@ class RalphConfig(BaseModel):
     def model_post_init(self, __context: Any) -> None:  # pydantic v2 hook
         # Resolve project_dir to absolute
         self.project_dir = self.project_dir.resolve()
+
+
+# ---------------------------------------------------------------------------
+# Model substitution
+# ---------------------------------------------------------------------------
+
+ModelSubstitution = tuple[str, str]
+
+
+def parse_model_substitutions(specs: list[str] | tuple[str, ...]) -> list[ModelSubstitution]:
+    """Parse ``FROM=TO`` model replacement specs.
+
+    ``FROM`` may be an exact model/alias or a shell-style glob pattern. Exact
+    aliases are resolved before matching, so ``kimi=openai/...`` matches a step
+    whose model was already expanded to ``nvidia/moonshotai/kimi-k2.6``.
+    """
+    substitutions: list[ModelSubstitution] = []
+    for spec in specs:
+        source, sep, target = spec.partition("=")
+        source = source.strip()
+        target = target.strip()
+        if not sep or not source or not target:
+            raise ValueError(f"Invalid model replacement {spec!r}; expected FROM=TO")
+        substitutions.append((_resolve_substitution_source(source), _resolve_model_alias(target)))
+    return substitutions
+
+
+def substitute_model_name(model: str, substitutions: list[ModelSubstitution]) -> str:
+    """Return model with the first matching substitution applied."""
+    if not model:
+        return model
+    for source, target in substitutions:
+        if _model_matches(model, source):
+            return target
+    return model
+
+
+def apply_model_substitutions(
+    config: RalphConfig,
+    substitutions: list[ModelSubstitution],
+) -> RalphConfig:
+    """Apply model substitutions to every model-bearing RalphConfig field."""
+    if not substitutions:
+        return config
+
+    steps: list[StepConfig] = []
+    for step in config.steps:
+        updates: dict[str, Any] = {
+            "model": substitute_model_name(step.model, substitutions),
+            "retry_model": substitute_model_name(step.retry_model, substitutions),
+            "retry_models": [
+                substitute_model_name(model, substitutions) for model in step.retry_models
+            ],
+        }
+        steps.append(step.model_copy(update=updates))
+
+    cycle_type_rules: list[dict[str, str]] = []
+    for rule in config.cycle_type_rules:
+        updated = dict(rule)
+        if "model" in updated:
+            updated["model"] = substitute_model_name(updated["model"], substitutions)
+        cycle_type_rules.append(updated)
+
+    return config.model_copy(
+        update={
+            "steps": steps,
+            "cycle_type_rules": cycle_type_rules,
+        }
+    )
+
+
+def _resolve_model_alias(model: str) -> str:
+    return BUILTIN_ALIASES.get(model, model)
+
+
+def _resolve_substitution_source(source: str) -> str:
+    if any(char in source for char in "*?"):
+        return source
+    return _resolve_model_alias(source)
+
+
+def _model_matches(model: str, source: str) -> bool:
+    if any(char in source for char in "*?"):
+        return fnmatchcase(model, source)
+    return model == source
 
 
 # ---------------------------------------------------------------------------
