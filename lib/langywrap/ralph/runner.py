@@ -392,7 +392,11 @@ class RalphLoop:
                     "`opencode auth login`) then re-run with --resume."
                 )
                 # Persist output so the failing response is inspectable.
-                out_path = self.state.step_output_path(output_key)
+                # File path is keyed by ``step.name`` (per-step debug log) —
+                # ``output_as`` is kept only as the logical key in
+                # ``steps_completed`` / ``confirmed_outputs`` to drive
+                # ``validates_plan`` and ``run_if_pattern`` lookups.
+                out_path = self.state.step_output_path(step.name)
                 out_path.write_text(output, encoding="utf-8")
                 result.steps_completed[output_key] = out_path
                 result.confirmed_tokens[output_key] = False
@@ -440,16 +444,23 @@ class RalphLoop:
                     result.rate_limited = True
                     abort_remaining = True
 
-            # Save output to steps/{output_key}.md
-            out_path = self.state.step_output_path(output_key)
+            # Save output to steps/{step.name}.md (per-step debug log).
+            # Two-tier file model:
+            #   1. ``ralph/steps/<step.name>.md`` — runner-owned debug log of
+            #      this step's text response. One file per step name, never
+            #      collides with a sibling step variant.
+            #   2. ``ralph/plan.md`` (and other state-dir files) — agent-owned
+            #      canonical state. Written by the model via the Write tool
+            #      when the prompt instructs it. The runner never touches
+            #      these from the response stream.
+            # ``output_as`` is now a logical key only (drives ``validates_plan``
+            # gating and ``confirmed_outputs`` lookup); it does not name a
+            # file path. Prompts must therefore not instruct the agent to
+            # ``Write ralph/steps/<X>.md`` — those writes would be clobbered
+            # by the runner's response-write here.
+            out_path = self.state.step_output_path(step.name)
             out_path.write_text(output, encoding="utf-8")
             result.steps_completed[output_key] = out_path
-
-            # Mirror to state_dir/plan.md so `validates_plan` sees the freshly
-            # captured output. Without this, output_as="plan" lands in steps/
-            # but _validate_plan reads state_dir/plan.md → always stale.
-            if output_key == "plan":
-                self.state.write_plan(output)
 
             # Check confirmation token
             confirmed = success and self._check_token(output, step.confirmation_token)
@@ -488,8 +499,6 @@ class RalphLoop:
 
                     out_path.write_text(output, encoding="utf-8")
                     result.steps_completed[output_key] = out_path
-                    if output_key == "plan":
-                        self.state.write_plan(output)
                     confirmed = success and self._check_token(output, step.confirmation_token)
                     result.confirmed_tokens[output_key] = confirmed
 
@@ -865,6 +874,14 @@ class RalphLoop:
         self._warn_redundant_enrichment()
         self._verify_graphify_health()
 
+        from langywrap.ralph.prompt_audit import (
+            audit_prompt_contracts,
+            format_findings,
+        )
+
+        prompt_findings = audit_prompt_contracts(self.config)
+        self._log(format_findings(prompt_findings))
+
         report: dict = {
             "project_dir": str(self.config.project_dir),
             "state_dir": str(self.config.resolved_state_dir),
@@ -874,6 +891,7 @@ class RalphLoop:
             "router": None,
             "quality_gate": None,
             "tool_discovery": tool_report,
+            "prompt_contracts": [f.as_dict() for f in prompt_findings],
         }
 
         # Check state files
