@@ -795,9 +795,32 @@ class RalphLoop:
             )
             commit_hash = hash_result.stdout.strip()
             self._log(f"    Committed: {commit_hash}")
+            if self.config.git_push_after_commit:
+                self.safe_git_push()
             return commit_hash
         except subprocess.CalledProcessError:
             return None
+
+    def safe_git_push(self) -> None:
+        """Push committed changes, swallowing failures as advisory warnings."""
+        project_dir = self.config.project_dir
+        try:
+            result = subprocess.run(
+                ["git", "push"],
+                cwd=project_dir,
+                capture_output=True,
+                text=True,
+            )
+        except Exception as exc:
+            self._log(f"    git push skipped: {exc}")
+            return
+
+        if result.returncode == 0:
+            self._log("    Pushed commit to remote.")
+            return
+
+        stderr = result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}"
+        self._log(f"    git push failed (ignored): {stderr}")
 
     # ------------------------------------------------------------------
     # Stagnation detection
@@ -1017,16 +1040,19 @@ class RalphLoop:
         if execwrap_path and rtk_path:
             probe_env = os.environ.copy()
             probe_env.update(env_overrides)
-            rtk_probe = subprocess.run(
-                [execwrap_path, "-c", "ls -l >/dev/null"],
-                cwd=self.config.project_dir,
-                env=probe_env,
-                capture_output=True,
-                text=True,
-                timeout=10,
-                check=False,
-            )
-            rtk_probe_text = (rtk_probe.stdout or "") + (rtk_probe.stderr or "")
+            try:
+                rtk_probe = subprocess.run(
+                    [execwrap_path, "-c", "ls -l >/dev/null"],
+                    cwd=self.config.project_dir,
+                    env=probe_env,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                    check=False,
+                )
+                rtk_probe_text = (rtk_probe.stdout or "") + (rtk_probe.stderr or "")
+            except subprocess.TimeoutExpired as exc:
+                rtk_probe_text = f"rtk probe timed out after {exc.timeout}s"
         probe_issues: list[str] = []
         probe_hints: list[str] = []
         execwrap_project_ok = f"EXECWRAP_PROJECT_DIR={self.config.project_dir}" in text

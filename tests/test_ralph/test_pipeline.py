@@ -261,6 +261,7 @@ class TestPipeline:
         assert cfg.quality_gate.command == "./just check"
         assert cfg.throttle_utc_start == 13
         assert cfg.throttle_utc_end == 19
+        assert cfg.git_push_after_commit is True
         assert cfg.git_add_paths == ["src/"]
         assert cfg.scope_restriction == "Test scope"
 

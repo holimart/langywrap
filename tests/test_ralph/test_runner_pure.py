@@ -13,9 +13,11 @@ Focuses on logic that doesn't require real AI backends or subprocess calls:
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 import pytest
+import langywrap.ralph.runner as runner_module
 from langywrap.ralph.config import RalphConfig, StepConfig
 from langywrap.ralph.runner import RalphLoop
 from langywrap.ralph.state import CycleResult
@@ -133,6 +135,32 @@ class TestBuiltinSteps:
         assert report["steps"][0]["builtin"] == "orient"
         assert "builtin_preview" in report["steps"][0]
         assert "Native task" in report["steps"][0]["builtin_preview"]
+
+
+class TestGitPush:
+    def test_push_failure_is_ignored_after_successful_commit(self, tmp_path, monkeypatch):
+        loop = _make_loop(tmp_path)
+        (tmp_path / ".git").mkdir()
+        calls: list[list[str]] = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            if cmd == ["git", "diff", "--cached", "--name-only"]:
+                return subprocess.CompletedProcess(cmd, 0, stdout="changed.txt\n", stderr="")
+            if cmd == ["git", "diff", "--cached", "--quiet"]:
+                return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="")
+            if cmd == ["git", "commit", "-m", "chore(ralph): cycle 7 — test summary"]:
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            if cmd == ["git", "rev-parse", "--short", "HEAD"]:
+                return subprocess.CompletedProcess(cmd, 0, stdout="abc123\n", stderr="")
+            if cmd == ["git", "push"]:
+                return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="no upstream")
+            raise AssertionError(f"unexpected command: {cmd}")
+
+        monkeypatch.setattr(runner_module.subprocess, "run", fake_run)
+
+        assert loop.safe_git_commit(7, "test summary") == "abc123"
+        assert ["git", "push"] in calls
 
 
 # ---------------------------------------------------------------------------

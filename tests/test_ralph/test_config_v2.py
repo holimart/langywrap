@@ -356,10 +356,11 @@ def test_load_v2_with_cycle_types_deprecated_warns(tmp_path):
 def test_load_v2_git_config(tmp_path):
     raw = {
         "flow": ["execute"],
-        "git": {"commit": False, "paths": ["src/"]},
+        "git": {"commit": False, "push": False, "paths": ["src/"]},
     }
     config = load_v2(raw, tmp_path)
     assert config.git_commit_after_cycle is False
+    assert config.git_push_after_commit is False
     assert "src/" in config.git_add_paths
 
 

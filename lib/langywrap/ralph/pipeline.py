@@ -736,6 +736,7 @@ class Pipeline(BaseModel):
             hygiene_every_n=hygiene_every_n,
             periodic_tasks=periodic_tasks,
             git_commit_after_cycle=True,
+            git_push_after_commit=True,
             git_add_paths=self.git,
             post_cycle_commands=list(self.post_cycle_commands),
             post_cycle_command_timeout=self.post_cycle_command_timeout,

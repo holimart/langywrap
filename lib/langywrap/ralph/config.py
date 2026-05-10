@@ -230,6 +230,9 @@ class RalphConfig(BaseModel):
     git_commit_after_cycle: bool = True
     """Commit staged changes at the end of each cycle."""
 
+    git_push_after_commit: bool = True
+    """Push after a successful cycle commit. Push failures are advisory only."""
+
     git_add_paths: list[str] = Field(default_factory=list)
     """Explicit paths to stage before committing (empty → no git add, only already-staged)."""
 

@@ -383,9 +383,11 @@ def load_v2(raw: dict, project_dir: Path) -> RalphConfig:
     git_cfg = raw.get("git", {})
     if isinstance(git_cfg, dict):
         git_commit = git_cfg.get("commit", True)
+        git_push = git_cfg.get("push", True)
         git_paths = git_cfg.get("paths", [])
     else:
         git_commit = True
+        git_push = True
         git_paths = []
 
     # -- Secrets -------------------------------------------------------------
@@ -437,6 +439,7 @@ def load_v2(raw: dict, project_dir: Path) -> RalphConfig:
             raw.get("hygiene", {}).get("every", 5) if isinstance(raw.get("hygiene"), dict) else 5,
         ),
         git_commit_after_cycle=git_commit,
+        git_push_after_commit=git_push,
         git_add_paths=git_paths,
         scope_restriction=raw.get("scope", ""),
         secret_patterns=(
@@ -454,4 +457,3 @@ def load_v2(raw: dict, project_dir: Path) -> RalphConfig:
         tasks_file=Path(raw["tasks_file"]) if raw.get("tasks_file") else None,
         progress_file=Path(raw["progress_file"]) if raw.get("progress_file") else None,
     )
-
