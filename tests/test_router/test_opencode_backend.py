@@ -159,6 +159,23 @@ class TestExtractText:
         raw = b'{"type":"text","text":"Hello from model"}\n'
         assert OpenCodeBackend._extract_text(raw) == "Hello from model"
 
+    def test_text_event_nested_part(self) -> None:
+        # Current opencode --format json shape: text payload lives under .part.text,
+        # not at the top level. Without this branch, _extract_text returns ""
+        # and the caller falls back to the raw JSON dump.
+        raw = (
+            b'{"type":"text","timestamp":1,"sessionID":"s","part":'
+            b'{"id":"p","type":"text","text":"Hello nested"}}\n'
+        )
+        assert OpenCodeBackend._extract_text(raw) == "Hello nested"
+
+    def test_text_events_mixed_flat_and_nested(self) -> None:
+        raw = (
+            b'{"type":"text","text":"flat "}\n'
+            b'{"type":"text","part":{"type":"text","text":"nested"}}\n'
+        )
+        assert OpenCodeBackend._extract_text(raw) == "flat nested"
+
     def test_assistant_message_event(self) -> None:
         raw = (
             b'{"type":"assistant","message":{"content":[{"type":"text","text":"Response here"}]}}\n'

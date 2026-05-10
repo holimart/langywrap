@@ -1284,8 +1284,14 @@ class OpenCodeBackend:
         Parse opencode JSON event stream and extract model text content.
 
         opencode emits lines like:
-          {"type":"text","text":"..."}
+          {"type":"text","text":"..."}                               # legacy flat
+          {"type":"text","part":{"type":"text","text":"..."}}        # current nested
           {"type":"assistant","message":{"content":[{"type":"text","text":"..."}]}}
+
+        Without the nested-`part` branch, current opencode output extracts to ""
+        and the caller falls back to the raw JSON dump — which then bloats
+        downstream state files (plan.md, steps/*.md) and confuses the next
+        orient step into mimicking past execute summaries.
         """
         lines = raw.decode(errors="replace").splitlines()
         parts: list[str] = []
@@ -1297,10 +1303,20 @@ class OpenCodeBackend:
                 event = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            # Direct text event
+            # Direct text event (legacy flat format)
             if event.get("type") == "text" and isinstance(event.get("text"), str):
                 parts.append(event["text"])
                 continue
+            # Nested part text event (current opencode format).
+            if event.get("type") == "text":
+                part = event.get("part")
+                if (
+                    isinstance(part, dict)
+                    and part.get("type") == "text"
+                    and isinstance(part.get("text"), str)
+                ):
+                    parts.append(part["text"])
+                    continue
             # Assistant message with content array
             msg = event.get("message", {})
             content = msg.get("content") if isinstance(msg, dict) else None
