@@ -748,6 +748,9 @@ class ModuleRunner:
             "genome": self.module.export_genome(),
             "forward_source": self.module.get_forward_source(),
         }
+        from langywrap.ralph.model_mix import module_model_mix
+
+        report["model_mix"] = module_model_mix(self.module, self.model_substitutions)
 
         for name, sd in self.module._step_defs.items():
             prompt_path = (

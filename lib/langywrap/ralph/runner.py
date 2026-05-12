@@ -1025,12 +1025,16 @@ class RalphLoop:
             "state_dir": str(self.config.resolved_state_dir),
             "prompts_dir": str(self.config.resolved_prompts_dir),
             "steps": [],
+            "model_mix": {},
             "state_files": {},
             "router": None,
             "quality_gate": None,
             "tool_discovery": tool_report,
             "prompt_contracts": [f.as_dict() for f in prompt_findings],
         }
+        from langywrap.ralph.model_mix import config_model_mix
+
+        report["model_mix"] = config_model_mix(self.config)
 
         # Check state files
         for fname in ["tasks.md", "progress.md", "plan.md"]:
