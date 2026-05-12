@@ -20,7 +20,6 @@ from langywrap.ralph.prompt_audit import (
     format_findings,
 )
 
-
 # Fixtures -------------------------------------------------------------------
 
 

@@ -42,6 +42,7 @@ from pydantic import BaseModel, Field
 # Model alias resolution (shared with config_v2)
 # ---------------------------------------------------------------------------
 from langywrap.ralph.aliases import BUILTIN_ALIASES as _MODEL_ALIASES
+from langywrap.ralph.coverage_budget import CoverageBudget
 
 
 def _resolve_model(name: str, extra: dict[str, str] | None = None) -> str:
@@ -350,6 +351,31 @@ class Step(BaseModel):
     """If True, the step's prompt is prefixed with the compact orient_context
     block (recent cycles summary + tasks.md head). Set this on the step
     whose prompt expects the context (typically the orient step)."""
+
+    # -- Anti-mode-collapse: coverage budgets + linter --------------------------
+
+    coverage_budgets: list[CoverageBudget] = Field(default_factory=list)
+    """For ``builtin='inline_orient'``: list of CoverageBudget declarations. If
+    any budget is violated against ``progress.md`` history, the orient picker
+    filters pending tasks to the union of violated task types."""
+
+    allowed_task_types: list[str] = Field(default_factory=list)
+    """Per-repo task-type whitelist consumed by both ``inline_orient`` (parser)
+    and the linter. Empty = accept any."""
+
+    allowed_priorities: list[str] = Field(default_factory=list)
+    """Per-repo priority whitelist consumed by the linter. Empty = default
+    ``['P0','P1','P2','P3']``."""
+
+    max_active: int = 1
+    """Linter cap on tasks under ``## Active``."""
+
+    allow_legacy_format: bool = False
+    """Linter: accept legacy ``- [ ] **<type>**: <label>`` lines (migration aid)."""
+
+    preflight_lint: bool = True
+    """When ``builtin='inline_orient'``: run the linter in autofix mode before
+    picking. Hard-fail aborts the step."""
 
     def __init__(self, name: str = "", **kwargs: Any) -> None:
         if "token" in kwargs and "confirmation_token" not in kwargs:
@@ -952,6 +978,15 @@ class Pipeline(BaseModel):
             validates_plan=step.validates_plan,
             primary=step.primary,
             includes_orient_context=step.includes_orient_context,
+            coverage_budgets=[
+                b.model_dump() if isinstance(b, BaseModel) else dict(b)
+                for b in step.coverage_budgets
+            ],
+            allowed_task_types=list(step.allowed_task_types),
+            allowed_priorities=list(step.allowed_priorities),
+            max_active=step.max_active,
+            allow_legacy_format=step.allow_legacy_format,
+            preflight_lint=step.preflight_lint,
         )
 
     def _loop_to_step_configs(self, loop: Loop, prompts_dir: Path) -> list[StepConfig]:  # noqa: F821

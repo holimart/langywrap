@@ -28,6 +28,19 @@ from langywrap.ralph.config import (
     StepConfig,
     load_ralph_config,
 )
+from langywrap.ralph.coverage_budget import (
+    CoverageBudget,
+    CoverageReport,
+    evaluate_coverage,
+    filter_eligible_tasks,
+)
+from langywrap.ralph.lint_tasks import (
+    LintConfig,
+    LintFinding,
+    LintReport,
+    autofix as lint_autofix,
+    lint as lint_tasks,
+)
 from langywrap.ralph.module import Module, ModuleRunner, StepDef
 from langywrap.ralph.module import gate as module_gate
 from langywrap.ralph.module import match as module_match
@@ -75,4 +88,14 @@ __all__ = [
     "RalphState",
     "TaskEntry",
     "TaskStatus",
+    # Anti-mode-collapse: coverage budgets + linter
+    "CoverageBudget",
+    "CoverageReport",
+    "evaluate_coverage",
+    "filter_eligible_tasks",
+    "LintConfig",
+    "LintFinding",
+    "LintReport",
+    "lint_tasks",
+    "lint_autofix",
 ]

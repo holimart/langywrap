@@ -32,6 +32,12 @@ from dataclasses import dataclass, field
 AUTO_PIN_RE = re.compile(r"\(auto-pin cycle (\d+), policy: (P\d+)\)")
 TASK_LINE_RE = re.compile(r"^- \[( |x)\]\s+\*\*([a-z_][a-z_0-9]*)\*\*:\s*(.*)$")
 CHECKBOX_PREFIX_RE = re.compile(r"^- \[( |x)\]\s+(.*)$")
+# Unified task format used post-unification:
+#   - [ ] **[P0] task:slug-name** [task_type] Human label
+# Five groups: status, priority, slug, task_type, label.
+UNIFIED_TASK_LINE_RE = re.compile(
+    r"^- \[( |x)\]\s+\*\*\[(P\d)\]\s+task:([a-z][\w-]*)\*\*\s+\[([a-z_][\w_]*)\]\s+(.*)$"
+)
 CYCLE_HDR_RE = re.compile(r"^## Cycle (\d+)\b(.*)$")
 CYCLE_TYPE_HINT_RE = re.compile(
     r"##\s*Cycle\s+\d+\s*—\s*([a-z_]+)\s*—",
@@ -42,7 +48,15 @@ TASK_TYPE_BODY_RE = re.compile(r"^\s*TASK_TYPE:\s*([a-z_]+)\s*$", re.MULTILINE)
 
 @dataclass
 class CheckboxTask:
-    """A `- [ ] **<task_type>**: <label>` line."""
+    """A parsed checkbox task line.
+
+    Carries fields from either the legacy ktorobi format
+    ``- [ ] **<task_type>**: <label>`` or the unified format
+    ``- [ ] **[P0] task:slug** [task_type] <label>``.
+
+    ``priority`` and ``slug`` are populated only by ``parse_unified_tasks``;
+    callers consuming the legacy parser see them as empty strings.
+    """
 
     line_no: int
     raw: str
@@ -51,6 +65,8 @@ class CheckboxTask:
     label: str
     auto_pin_policy: str | None = None
     auto_pin_cycle: int | None = None
+    priority: str = ""
+    slug: str = ""
 
     @property
     def is_open(self) -> bool:
@@ -125,6 +141,36 @@ def parse_checkbox_tasks(
                 status=" " if status != "x" else "x",
                 task_type=ttype,
                 label=label,
+                auto_pin_policy=pin.group(2) if pin else None,
+                auto_pin_cycle=int(pin.group(1)) if pin else None,
+            )
+        )
+    return out
+
+
+def parse_unified_tasks(text: str) -> list[CheckboxTask]:
+    """Parse `- [ ] **[P0] task:slug** [type] label` lines (the unified format).
+
+    Lines that don't match the strict regex are skipped (use the linter to
+    surface malformed lines separately). Each result carries ``priority``,
+    ``slug``, ``task_type``, and ``label`` populated.
+    """
+    out: list[CheckboxTask] = []
+    for i, line in enumerate(text.splitlines()):
+        m = UNIFIED_TASK_LINE_RE.match(line)
+        if not m:
+            continue
+        status, prio, slug, ttype, label = m.groups()
+        pin = AUTO_PIN_RE.search(label)
+        out.append(
+            CheckboxTask(
+                line_no=i,
+                raw=line,
+                status=" " if status != "x" else "x",
+                task_type=ttype,
+                label=label,
+                priority=prio,
+                slug=slug,
                 auto_pin_policy=pin.group(2) if pin else None,
                 auto_pin_cycle=int(pin.group(1)) if pin else None,
             )
@@ -348,10 +394,12 @@ __all__ = [
     "CycleBlock",
     "TASK_LINE_RE",
     "TASK_TYPE_BODY_RE",
+    "UNIFIED_TASK_LINE_RE",
     "apply_auto_pins",
     "dedupe_cycles",
     "find_first_open_task",
     "parse_auto_pin_lines",
     "parse_checkbox_tasks",
     "parse_cycle_blocks",
+    "parse_unified_tasks",
 ]

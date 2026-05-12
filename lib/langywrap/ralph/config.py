@@ -152,6 +152,28 @@ class StepConfig(BaseModel):
     """If True, prefix the prompt with the compact orient_context block
     (recent cycles summary + tasks.md head)."""
 
+    # -- Anti-mode-collapse: coverage budgets + linter --------------------------
+
+    coverage_budgets: list[dict] = Field(default_factory=list)
+    """For ``builtin='inline_orient'``: each entry has ``task_type``,
+    ``min_fraction``, ``window`` keys. Pydantic re-validates into CoverageBudget
+    objects at dispatch time."""
+
+    allowed_task_types: list[str] = Field(default_factory=list)
+    """Per-repo task-type whitelist (orient parser + linter)."""
+
+    allowed_priorities: list[str] = Field(default_factory=list)
+    """Per-repo priority whitelist (linter). Empty = default P0..P3."""
+
+    max_active: int = 1
+    """Linter cap on ``## Active``."""
+
+    allow_legacy_format: bool = False
+    """Linter accepts legacy ``- [ ] **<type>**: <label>`` lines."""
+
+    preflight_lint: bool = True
+    """``builtin='inline_orient'`` runs the linter in autofix mode first."""
+
 
 # ---------------------------------------------------------------------------
 # QualityGateConfig

@@ -656,7 +656,115 @@ class RalphLoop:
 
             db = TaskDB(self.config.project_dir, self.config.resolved_state_dir)
             return db.render_orient(confirmation_token=step.confirmation_token)
+        if step.builtin == "inline_orient":
+            return self._run_inline_orient(step, cycle_context)
         raise ValueError(f"Unknown builtin step: {step.builtin}")
+
+    def _run_inline_orient(self, step: StepConfig, cycle_context: dict) -> str:
+        """Inline (no-LLM) orient: lint preflight + coverage budget + task pick.
+
+        Reads ``tasks.md`` and ``progress.md`` from the configured state dir,
+        runs the linter in autofix mode (writing back to ``tasks.md`` if fixes
+        applied), evaluates coverage budgets against the progress history,
+        filters pending tasks to the union of violated types, and returns a
+        deterministic ``orient.md`` payload naming the selected task.
+
+        Raises ``ValueError`` on lint hard-fail or empty eligible set — the
+        step framework treats this as a step failure.
+        """
+        from langywrap.ralph.coverage_budget import (
+            CoverageBudget,
+            evaluate_coverage,
+            filter_eligible_tasks,
+        )
+        from langywrap.ralph.lint_tasks import LintConfig
+        from langywrap.ralph.lint_tasks import autofix as lint_autofix
+        from langywrap.ralph.markdown_todo import parse_unified_tasks
+
+        state_dir = self.config.resolved_state_dir
+        tasks_file = state_dir / "tasks.md"
+        progress_file = state_dir / "progress.md"
+
+        if not tasks_file.exists():
+            raise ValueError(f"inline_orient: tasks file not found at {tasks_file}")
+        tasks_text = tasks_file.read_text(encoding="utf-8")
+        progress_text = progress_file.read_text(encoding="utf-8") if progress_file.exists() else ""
+
+        # ── Preflight lint (autofix) ──────────────────────────────────────────
+        lint_summary = "lint: skipped (preflight_lint disabled)"
+        if step.preflight_lint:
+            lint_config = LintConfig(
+                allowed_task_types=tuple(step.allowed_task_types),
+                allowed_priorities=(
+                    tuple(step.allowed_priorities)
+                    if step.allowed_priorities
+                    else ("P0", "P1", "P2", "P3")
+                ),
+                max_active=step.max_active,
+                allow_legacy_format=step.allow_legacy_format,
+            )
+            lint_report = lint_autofix(tasks_text, lint_config)
+            if lint_report.fixed_text is not None and lint_report.fixed_text != tasks_text:
+                tasks_file.write_text(lint_report.fixed_text, encoding="utf-8")
+                tasks_text = lint_report.fixed_text
+            if not lint_report.is_clean:
+                raise ValueError(
+                    "inline_orient: preflight lint hard-failed:\n"
+                    + lint_report.render()
+                )
+            lint_summary = (
+                f"lint: clean ({len(lint_report.autofixed)} autofix"
+                + ("es" if len(lint_report.autofixed) != 1 else "")
+                + " applied)"
+            )
+
+        # ── Coverage report ───────────────────────────────────────────────────
+        budgets = [CoverageBudget(**b) for b in step.coverage_budgets]
+        coverage = evaluate_coverage(progress_text, budgets)
+
+        # ── Pick task ─────────────────────────────────────────────────────────
+        parsed = parse_unified_tasks(tasks_text)
+        pending = [t for t in parsed if t.is_open]
+        eligible = filter_eligible_tasks(pending, coverage)
+        # Stable order: priority (P0 first), then file order.
+        eligible_sorted = sorted(eligible, key=lambda t: (t.priority, t.line_no))
+        selected = eligible_sorted[0] if eligible_sorted else None
+
+        if selected is None and pending and coverage.has_violations:
+            # Budget violation with no eligible task — surface the deficit.
+            raise ValueError(
+                "inline_orient: coverage budgets violated but no pending task "
+                f"of types {sorted(coverage.violated_types())} exists. "
+                "Operator must add at least one such task (or relax the budget)."
+            )
+        if selected is None:
+            raise ValueError("inline_orient: no pending task available to pick.")
+
+        # ── Render output ─────────────────────────────────────────────────────
+        cycle_num = cycle_context.get("cycle_num", 0)
+        lines = [
+            f"# Orient — Cycle {cycle_num}",
+            "",
+            "## Selected Task",
+            f"- **[{selected.priority}] task:{selected.slug}** "
+            f"[{selected.task_type}] {selected.label}",
+            "",
+            coverage.render_summary(),
+            "",
+            "## Picker Trace",
+            f"- Pending tasks: {len(pending)}",
+            f"- Eligible after coverage filter: {len(eligible)}",
+            f"- Selected: `task:{selected.slug}` "
+            f"(priority {selected.priority}, type {selected.task_type})",
+            "",
+            "## Linter",
+            lint_summary,
+            "",
+        ]
+        if step.confirmation_token:
+            lines.append(step.confirmation_token)
+            lines.append("")
+        return "\n".join(lines)
 
     def build_prompt(self, step: StepConfig, context: dict) -> str:
         """Load template file, inject project header + orient context + scope.
