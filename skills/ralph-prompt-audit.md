@@ -21,6 +21,12 @@ whole pipeline like a reviewer would.
   contracts that worked for one model can rot under another.
 - After resolving a `consecutive_failed_cycles` stop, before
   re-enabling the loop.
+- A cycle hard-failed in `inline_orient`'s preflight lint with
+  `unified_format` on a `tasks.md` line the loop itself just
+  wrote (template/lint coherence drift — run check J).
+- You edited `Periodic(...)` entries in `.langywrap/ralph.py`,
+  any `template=` string, or langywrap's `pipeline.py` /
+  `state.py` injection logic (run check J).
 
 ## Arguments
 
@@ -45,6 +51,13 @@ current working directory.
 4. **The static audit module** —
    `/mnt/work4t/Projects/langywrap/lib/langywrap/ralph/prompt_audit.py`.
    The semantic checks below extend, not replace, the rules there.
+5. **The lint contract** (only when running check J) —
+   `/mnt/work4t/Projects/langywrap/lib/langywrap/ralph/lint_tasks.py`
+   for `UNIFIED_TASK_LINE_RE` and the `unified_format` rule,
+   `/mnt/work4t/Projects/langywrap/lib/langywrap/ralph/pipeline.py`
+   for `Periodic → RalphConfig` wiring, and
+   `/mnt/work4t/Projects/langywrap/lib/langywrap/ralph/state.py`
+   for `inject_*_task` fallback strings.
 
 ## Semantic checks (each one a section in your report)
 
@@ -132,6 +145,99 @@ Cross-check against the case's `legal_triage.md` posture flag set in
 `step3_execute_caseinit.md`. FAIL if a step could trigger a
 gated action without the matching posture check.
 
+### J. Task-injection template ↔ lint coherence
+The runner periodically writes new tasks into `ralph/tasks.md`
+(hygiene, lookback, adversarial, custom periodics) and then the
+**same** `tasks.md` is preflight-linted at the top of every cycle.
+A mismatch between the templates that emit checkbox lines and the
+lint rule that validates them is a silent foot-gun: the loop will
+inject a malformed line, then hard-fail its own preflight on the
+next cycle. We have hit this in production (see
+`docs/solutions/2026-05-12_hygiene_template_dropped_by_pipeline.md`
+if present, or the ktorobi cycle-150 incident in git log).
+
+Run these sub-checks per project:
+
+**J.1 — Lint contract (read once)**
+
+Open
+`/mnt/work4t/Projects/langywrap/lib/langywrap/ralph/lint_tasks.py`
+and capture:
+  - `UNIFIED_TASK_LINE_RE` and `CHECKBOX_PREFIX_RE` (the shape
+    every checkbox line must satisfy).
+  - The error message at the `rule="unified_format"` finding
+    (`- [ ] **[Pn] task:slug** [task_type] label`) — this is the
+    authoritative format string.
+  - `LintConfig.allowed_task_types` and `allowed_priorities`
+    defaults, plus any project override in
+    `.langywrap/lint.yaml` / `ralph.py`.
+
+**J.2 — Project template shape**
+
+In `${PROJECT}/.langywrap/ralph.py`, locate every
+`Periodic(...)` definition. For each `Periodic` with a `template=`
+argument, expand the template with placeholder values
+(`{cycle}=999`, `{date}=2099-01-01`,
+`{quality_gate_cmd}=run quality checks`) and verify the **first
+non-blank line** matches `UNIFIED_TASK_LINE_RE` AND uses an allowed
+priority + task_type. FAIL on mismatch — quote the rendered line
+and the rule message.
+
+Common bug: template starts with `- [ ] **[P2] <Label>**` with no
+`task:<slug>` segment and no `[<task_type>]` tag. This is the exact
+shape `state.py`'s fallback emits when the project template is
+silently dropped.
+
+**J.3 — Library fallback shape**
+
+In `/mnt/work4t/Projects/langywrap/lib/langywrap/ralph/state.py`,
+read `inject_hygiene_task` (around line 305) and any sibling
+`inject_*` injectors. If the function has a fallback branch
+(`if template: ... else: <inline string>`), the inline string must
+also satisfy `UNIFIED_TASK_LINE_RE`. A library fallback that
+violates the lint rule is a latent footgun for every downstream
+project that forgets to pass `template=`. FAIL — patch the
+fallback or delete it in favor of a hard error.
+
+**J.4 — Pipeline wiring (template plumbed through?)**
+
+In
+`/mnt/work4t/Projects/langywrap/lib/langywrap/ralph/pipeline.py`,
+locate the `for p in self.periodic:` loop. For **every** branch
+(`builtin == "hygiene"`, `builtin == "lookback"`, `p.step`,
+`p.template` only), verify:
+  - `p.template` is captured into a local that is then forwarded to
+    `RalphConfig(...)` (e.g. `hygiene_template=hygiene_template`),
+    OR appended to `periodic_tasks` with `"template": p.template`.
+  - The matching field exists on `RalphConfig` (check `config.py`).
+  - The runner reads that field when injecting
+    (check `runner.py` around lines 150–200).
+
+FAIL if a `Periodic` builtin captures `p.every` but discards
+`p.template` (this was the ktorobi cycle-150 root cause). The
+project template silently becomes empty and the library fallback
+takes over.
+
+**J.5 — Live tasks.md sanity**
+
+In `${PROJECT}/ralph/tasks.md`, grep the last 30 checkbox lines
+and confirm each matches `UNIFIED_TASK_LINE_RE`. If any do not,
+WARN with line number and quote — the next preflight will hard-fail.
+(This is a runtime tripwire complementing J.2–J.4: if the static
+audit passes but live state is dirty, the loop has already drifted.)
+
+**J.6 — Marker uniqueness**
+
+For each periodic injection, the runner uses a marker comment
+(`<!-- hygiene-cycle-N -->`) for dedup. WARN if two checkbox lines
+in `tasks.md` share the same marker, or if a template emits no
+marker at all (silent dedup failure → duplicate injections every
+cycle).
+
+Cite all findings under `### [FAIL|WARN] task-injection — J.<n>
+<title>` and tie each to a concrete failure mode (cycle that
+hard-failed, duplicate task, or "next preflight will break").
+
 ## Output format
 
 End your reply with a single Markdown report:
@@ -140,7 +246,7 @@ End your reply with a single Markdown report:
 # Ralph Contract Audit — <project> — <date>
 
 ## Summary
-- Checks run: 9
+- Checks run: 10
 - FAIL: <N>
 - WARN: <N>
 - PASS: <N>

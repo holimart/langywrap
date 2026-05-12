@@ -610,6 +610,7 @@ class Pipeline(BaseModel):
         adversarial_every_n: int | None = None
         adversarial_milestone_patterns: list[str] = []
         hygiene_every_n: int | None = None
+        hygiene_template: str = ""
         periodic_tasks: list[dict[str, Any]] = []
 
         # --- Steps ---
@@ -671,6 +672,8 @@ class Pipeline(BaseModel):
         for p in self.periodic:
             if p.builtin == "hygiene":
                 hygiene_every_n = p.every
+                if p.template:
+                    hygiene_template = p.template
             elif p.builtin == "lookback":
                 marker = p.marker or "lookback"
                 periodic_tasks.append(
@@ -760,6 +763,7 @@ class Pipeline(BaseModel):
             adversarial_step=adversarial_step_name,
             adversarial_milestone_patterns=adversarial_milestone_patterns,
             hygiene_every_n=hygiene_every_n,
+            hygiene_template=hygiene_template,
             periodic_tasks=periodic_tasks,
             git_commit_after_cycle=True,
             git_push_after_commit=True,
