@@ -683,7 +683,8 @@ def collect_model_mix(
     """Collect effective model-provider mix by loading the project config directly."""
     specs_json = json.dumps(replacement_specs)
     helper_lib = model_mix_helper_lib(project)
-    command = f"""python3 - <<'PY'
+    helper_python = model_mix_helper_python(project)
+    command = f"""{shlex.quote(helper_python)} - <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -717,6 +718,14 @@ def model_mix_helper_lib(project: ProjectRef) -> str:
     if project.is_remote:
         return str(PurePosixPath(project.path).parent / "langywrap" / "lib")
     return str(REPO_ROOT / "lib")
+
+
+def model_mix_helper_python(project: ProjectRef) -> str:
+    """Return Python executable with langywrap dependencies for model mix loading."""
+    if project.is_remote:
+        return str(PurePosixPath(project.path).parent / "langywrap" / ".venv" / "bin" / "python")
+    local_venv = REPO_ROOT / ".venv" / "bin" / "python"
+    return str(local_venv if local_venv.exists() else "python3")
 
 
 def inspect_project(
