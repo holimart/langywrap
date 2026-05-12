@@ -159,6 +159,48 @@ def test_no_pending_task_raises(tmp_path: Path) -> None:
         loop._run_inline_orient(step, {"cycle_num": 1})
 
 
+def test_emits_task_type_token_for_downstream_detect(tmp_path: Path) -> None:
+    """The orient output must carry a literal ``TASK_TYPE: <type>`` line.
+
+    Two downstream consumers depend on this:
+
+    1. Per-repo configs use ``detects_cycle=Match(scan=r"TASK_TYPE:\\s*scan")``
+       to gate plan/execute steps. Without the token, every typed step
+       SKIPS with ``cycle type '' not in [...]``.
+    2. ``coverage_budget.evaluate_coverage`` reads ``TASK_TYPE:`` rows from
+       progress.md to count which cycle types are under their floor.
+
+    Regression: 2026-05-12 — initial inline_orient render emitted only
+    the bracket form ``[type]`` in the bullet, no literal token. Every
+    whitehacky cycle ran ORIENT → FINALIZE only.
+    """
+    tasks = (
+        "## Active\n\n"
+        "## Pending\n"
+        "- [ ] **[P0] task:do-it** [research] First thing\n"
+    )
+    loop, step = _build_loop(
+        tmp_path,
+        tasks,
+        "",
+        allowed_task_types=("research", "fix"),
+    )
+    out = loop._run_inline_orient(step, {"cycle_num": 1})
+
+    # 1. Literal token present on its own line.
+    assert "TASK_TYPE: research" in out
+    import re
+
+    assert re.search(r"^TASK_TYPE:\s*research\s*$", out, re.MULTILINE)
+
+    # 2. Round-trip: the output satisfies the per-repo detects_cycle pattern.
+    loop.config.cycle_type_rules = [
+        {"name": "research", "pattern": r"TASK_TYPE:\s*research"},
+        {"name": "fix", "pattern": r"TASK_TYPE:\s*fix"},
+    ]
+    assert loop._detect_cycle_type(out) == "research"
+
+
 def test_violation_with_no_eligible_task_raises(tmp_path: Path) -> None:
     # Coverage violated on `research`, but no research task exists.
     progress = "".join(

@@ -741,9 +741,21 @@ class RalphLoop:
             raise ValueError("inline_orient: no pending task available to pick.")
 
         # ── Render output ─────────────────────────────────────────────────────
+        # The literal ``TASK_TYPE: <type>`` line is the structured-output
+        # contract that downstream consumers depend on:
+        #   1. ``detects_cycle=Match(scan=r"TASK_TYPE:\\s*scan", ...)`` in
+        #      per-repo ralph.py configs gates plan/execute branching on it.
+        #   2. ``coverage_budget.evaluate_coverage`` reads ``TASK_TYPE:`` rows
+        #      from progress.md (FINALIZE copies the orient label across) to
+        #      decide which task types are under their floor.
+        # Without this line every plan/execute step that has ``when_cycle=[…]``
+        # is SKIPPED and the anti-mode-collapse engine stays dormant.
+        # See: solutions/2026-05-12_inline_orient_missing_task_type_token.md
         cycle_num = cycle_context.get("cycle_num", 0)
         lines = [
             f"# Orient — Cycle {cycle_num}",
+            "",
+            f"TASK_TYPE: {selected.task_type}",
             "",
             "## Selected Task",
             f"- **[{selected.priority}] task:{selected.slug}** "
