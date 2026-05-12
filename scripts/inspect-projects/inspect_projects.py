@@ -682,9 +682,15 @@ def collect_model_mix(
 ) -> dict[str, Any]:
     """Collect effective model-provider mix by loading the project config directly."""
     specs_json = json.dumps(replacement_specs)
+    helper_lib = model_mix_helper_lib(project)
     command = f"""python3 - <<'PY'
 import json
+import sys
 from pathlib import Path
+
+helper_lib = {helper_lib!r}
+if helper_lib:
+    sys.path.insert(0, helper_lib)
 
 from langywrap.ralph.model_mix import project_model_mix
 
@@ -704,6 +710,13 @@ PY"""
         obj["ok"] = True
     write_text(out_dir / "model_mix.json", json.dumps(obj, indent=2, sort_keys=True) + "\n")
     return obj
+
+
+def model_mix_helper_lib(project: ProjectRef) -> str:
+    """Return langywrap/lib path to put on sys.path for direct config loading."""
+    if project.is_remote:
+        return str(PurePosixPath(project.path).parent / "langywrap" / "lib")
+    return str(REPO_ROOT / "lib")
 
 
 def inspect_project(

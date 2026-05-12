@@ -35,6 +35,9 @@ import the matching langywrap helper.
 If that helper is a new local langywrap change, the fix is to commit and push
 local langywrap, then pull it in the sibling remote langywrap checkout. Only do
 this when explicitly requested.
+The collector adds `<project-parent>/langywrap/lib` to the remote Python
+`sys.path` for model-mix loading, so the sibling checkout must be synced even if
+the remote project itself does not have langywrap installed.
 
 Deep diagnosis command:
 

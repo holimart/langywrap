@@ -45,6 +45,9 @@ in that case, check the sibling remote langywrap checkout and Python path.
 If the missing helper is a new local langywrap change, commit and push the local
 langywrap update, then pull it in the sibling remote langywrap checkout before
 re-running status. Do not do this automatically unless the user explicitly asks.
+The collector should add `<project-parent>/langywrap/lib` to the remote Python
+`sys.path` when loading model mix, so a synced sibling checkout is enough; the
+remote project does not need a separate package install for inspection.
 
 Report the printed table directly. Highlight any project where:
 
