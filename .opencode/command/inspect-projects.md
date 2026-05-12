@@ -112,6 +112,28 @@ Remote restart pattern:
 ssh user@host 'tmux send-keys -t ralph-project "cd /path/to/project && path/to/langywrap ralph run -n 50 --resume --no-tmux ." C-m'
 ```
 
+Remote stop/restart in the same pane:
+
+```bash
+ssh user@host 'tmux send-keys -t ralph-project C-c'
+ssh user@host 'tmux send-keys -t ralph-project "cd /path/to/project && /path/to/langywrap/.venv/bin/langywrap ralph run --resume --no-tmux ." C-m'
+```
+
+Model replacement syntax is `--replace-model FROM=TO`; `FROM` may be an exact
+model/alias or shell glob. Quote globs. Example replacing Kimi with GPT-5.4:
+
+```bash
+ssh user@host 'tmux send-keys -t ralph-project "cd /path/to/project && /path/to/langywrap/.venv/bin/langywrap ralph run --resume --no-tmux --replace-model '\''*kimi*=openai/gpt-5.4'\'' ." C-m'
+```
+
+Verify with:
+
+```bash
+scripts/inspect-projects/inspect_projects.py --status-only --model-details project
+```
+
+Expect a `replacements:` line and changed provider percentages.
+
 Common signatures:
 
 - Remote `git-error: fatal: not a git repository` can be SSH quoting, not a bad path.

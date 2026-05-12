@@ -178,6 +178,33 @@ Useful restart pattern for a remote pane:
 ssh user@host 'tmux send-keys -t ralph-project "cd /path/to/project && path/to/langywrap ralph run -n 50 --resume --no-tmux ." C-m'
 ```
 
+To intentionally stop and restart a remote Ralph loop in the existing pane, send
+Ctrl-C first, then send the resume command with `--no-tmux` so it reuses the pane
+instead of creating a nested session:
+
+```bash
+ssh user@host 'tmux send-keys -t ralph-project C-c'
+ssh user@host 'tmux send-keys -t ralph-project "cd /path/to/project && /path/to/langywrap/.venv/bin/langywrap ralph run --resume --no-tmux ." C-m'
+```
+
+Model replacements use the Ralph CLI `--replace-model FROM=TO` syntax. `FROM`
+can be an exact alias/model or a shell glob. Quote globs so the local or remote
+shell does not expand them before langywrap sees them. Example replacing all Kimi
+models with OpenAI GPT-5.4 during a remote restart:
+
+```bash
+ssh user@host 'tmux send-keys -t ralph-project "cd /path/to/project && /path/to/langywrap/.venv/bin/langywrap ralph run --resume --no-tmux --replace-model '\''*kimi*=openai/gpt-5.4'\'' ." C-m'
+```
+
+After restart, verify both liveness and effective provider mix:
+
+```bash
+scripts/inspect-projects/inspect_projects.py --status-only --model-details project
+```
+
+The model details should show a `replacements:` line and provider percentages
+should reflect the replacement, for example `oth 0%` after replacing Kimi.
+
 If an old traceback remains in tmux scrollback after a successful restart, rely on
 the inspector's scoped `tmux.error` for the latest Ralph run. Do not report stale
 errors from before the newest `RalphLoop starting:` marker as active failures.
