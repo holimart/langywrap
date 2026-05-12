@@ -1,0 +1,357 @@
+"""Generic helpers for ralph-style markdown todo lists.
+
+Optional companion to `taskdb.py`. Where `taskdb.py` handles the richer
+`task:NAME` heading-style format used by langywrap-native projects, this
+module handles the simpler **checkbox-style** convention used by ktorobi
+and other downstream loops:
+
+```
+- [ ] **<task_type>**: <label> (auto-pin cycle N, policy: P<n>)
+- [x] **profile**: cycle 100 follow-up (cycle 100)
+```
+
+Two design goals:
+
+1. **Generic.** The module is agnostic to which task types or policy IDs a
+   downstream project uses. Pass `allowed_types` to filter, or omit to
+   accept any. Auto-pin tags are parsed structurally (cycle + policy ID).
+2. **Mutation-safe.** Operator-written lines (no `auto-pin` tag) are never
+   touched by `apply_auto_pins`. Only auto-pinned lines are subject to
+   replacement or removal.
+
+Downstream projects keep their policy logic local; this module supplies
+the markdown parse/rewrite primitives.
+"""
+
+from __future__ import annotations
+
+import re
+from collections.abc import Iterable
+from dataclasses import dataclass, field
+
+AUTO_PIN_RE = re.compile(r"\(auto-pin cycle (\d+), policy: (P\d+)\)")
+TASK_LINE_RE = re.compile(r"^- \[( |x)\]\s+\*\*([a-z_][a-z_0-9]*)\*\*:\s*(.*)$")
+CHECKBOX_PREFIX_RE = re.compile(r"^- \[( |x)\]\s+(.*)$")
+CYCLE_HDR_RE = re.compile(r"^## Cycle (\d+)\b(.*)$")
+CYCLE_TYPE_HINT_RE = re.compile(
+    r"##\s*Cycle\s+\d+\s*—\s*([a-z_]+)\s*—",
+    re.IGNORECASE,
+)
+TASK_TYPE_BODY_RE = re.compile(r"^\s*TASK_TYPE:\s*([a-z_]+)\s*$", re.MULTILINE)
+
+
+@dataclass
+class CheckboxTask:
+    """A `- [ ] **<task_type>**: <label>` line."""
+
+    line_no: int
+    raw: str
+    status: str  # ' ' or 'x'
+    task_type: str
+    label: str
+    auto_pin_policy: str | None = None
+    auto_pin_cycle: int | None = None
+
+    @property
+    def is_open(self) -> bool:
+        return self.status == " "
+
+    @property
+    def is_auto_pin(self) -> bool:
+        return self.auto_pin_policy is not None
+
+
+@dataclass
+class CycleBlock:
+    """A parsed `## Cycle N — …` block from progress.md.
+
+    `metrics` and `hashes` are project-specific bag of key→value pairs
+    populated by a caller-supplied parser hook (see `parse_cycle_blocks`).
+    """
+
+    n: int
+    task_type: str | None
+    body: str
+    metrics: dict[str, float] = field(default_factory=dict)
+    hashes: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
+class AutoPin:
+    """A pin issued by a finalize-time policy.
+
+    `policy` is an opaque ID like 'P1'; the downstream project owns the
+    namespace and the consumption semantics (which task types clear which
+    policies).
+    """
+
+    policy: str
+    task_type: str
+    label: str
+    cycle: int
+
+    def render(self) -> str:
+        return (
+            f"- [ ] **{self.task_type}**: {self.label} "
+            f"(auto-pin cycle {self.cycle}, policy: {self.policy})"
+        )
+
+
+def parse_checkbox_tasks(
+    text: str,
+    *,
+    allowed_types: Iterable[str] | None = None,
+) -> list[CheckboxTask]:
+    """Parse all `- [ ] **type**: …` lines from a tasks.md-style document.
+
+    Lines whose `task_type` is not in `allowed_types` (when given) are
+    silently skipped. Operator-written meta-lines like
+    `**[P2] Technical hygiene**` do not match and are skipped.
+    """
+    allowed = set(allowed_types) if allowed_types is not None else None
+    out: list[CheckboxTask] = []
+    for i, line in enumerate(text.splitlines()):
+        m = TASK_LINE_RE.match(line)
+        if not m:
+            continue
+        status, ttype, label = m.group(1), m.group(2), m.group(3)
+        if allowed is not None and ttype not in allowed:
+            continue
+        pin = AUTO_PIN_RE.search(label)
+        out.append(
+            CheckboxTask(
+                line_no=i,
+                raw=line,
+                status=" " if status != "x" else "x",
+                task_type=ttype,
+                label=label,
+                auto_pin_policy=pin.group(2) if pin else None,
+                auto_pin_cycle=int(pin.group(1)) if pin else None,
+            )
+        )
+    return out
+
+
+def find_first_open_task(
+    tasks: list[CheckboxTask],
+    *,
+    allowed_types: Iterable[str] | None = None,
+) -> CheckboxTask | None:
+    """Return the first `- [ ]` task. This is the orient pick.
+
+    `allowed_types` lets callers re-filter without re-parsing.
+    """
+    allowed = set(allowed_types) if allowed_types is not None else None
+    for t in tasks:
+        if not t.is_open:
+            continue
+        if allowed is not None and t.task_type not in allowed:
+            continue
+        return t
+    return None
+
+
+def parse_cycle_blocks(
+    text: str,
+    *,
+    metric_keys: Iterable[str] = (),
+    hash_keys: Iterable[str] = (),
+) -> list[CycleBlock]:
+    """Parse `## Cycle N — …` blocks.
+
+    `metric_keys` lists keys whose body lines look like `key(N) = <float>`
+    (e.g. `floor(100) = 0.005`). Matched values land in `block.metrics[key]`.
+
+    `hash_keys` lists keys whose body lines look like `key: <hexsha>` (e.g.
+    `mem_hash: deadbeef...`). Matched values land in `block.hashes[key]`.
+
+    Duplicate cycle numbers are returned as separate blocks; callers can
+    dedupe by `n` if they want a single observation per cycle.
+    """
+    metric_keys = tuple(metric_keys)
+    hash_keys = tuple(hash_keys)
+    metric_res = {
+        k: re.compile(rf"^\s*{re.escape(k)}\((\d+)\)\s*=\s*([0-9.eE+-]+)") for k in metric_keys
+    }
+    hash_res = {k: re.compile(rf"^\s*{re.escape(k)}:\s*([0-9a-f]+)") for k in hash_keys}
+    lines = text.splitlines()
+    starts = [i for i, ln in enumerate(lines) if CYCLE_HDR_RE.match(ln)]
+    starts.append(len(lines))
+    blocks: list[CycleBlock] = []
+    for idx in range(len(starts) - 1):
+        hdr = CYCLE_HDR_RE.match(lines[starts[idx]])
+        if not hdr:
+            continue
+        n = int(hdr.group(1))
+        block_text = "\n".join(lines[starts[idx] : starts[idx + 1]])
+        type_hint = CYCLE_TYPE_HINT_RE.search(block_text)
+        body_type = TASK_TYPE_BODY_RE.search(block_text)
+        task_type = (
+            body_type.group(1).lower()
+            if body_type
+            else type_hint.group(1).lower()
+            if type_hint
+            else None
+        )
+        metrics: dict[str, float] = {}
+        hashes: dict[str, str] = {}
+        for ln in block_text.splitlines():
+            for k, pat in metric_res.items():
+                m = pat.match(ln)
+                if m and int(m.group(1)) == n:
+                    metrics[k] = float(m.group(2))
+            for k, pat in hash_res.items():
+                m = pat.match(ln)
+                if m:
+                    hashes[k] = m.group(1)
+        blocks.append(
+            CycleBlock(
+                n=n,
+                task_type=task_type,
+                body=block_text,
+                metrics=metrics,
+                hashes=hashes,
+            )
+        )
+    return blocks
+
+
+def dedupe_cycles(cycles: list[CycleBlock]) -> list[CycleBlock]:
+    """Return one block per cycle number, preferring the richest observation.
+
+    Richness order: non-None `task_type` beats None; any populated
+    `metrics`/`hashes` beats empty.
+    """
+    seen: dict[int, CycleBlock] = {}
+    for c in cycles:
+        existing = seen.get(c.n)
+        if existing is None:
+            seen[c.n] = c
+            continue
+        if existing.task_type is None and c.task_type is not None:
+            seen[c.n] = c
+            continue
+        if not existing.metrics and c.metrics:
+            seen[c.n] = c
+            continue
+        if not existing.hashes and c.hashes:
+            seen[c.n] = c
+    return [seen[n] for n in sorted(seen)]
+
+
+@dataclass
+class AutoPinLine:
+    """A `- [ ]` / `- [x]` line carrying an `(auto-pin cycle N, policy: P<n>)` tag.
+
+    Format-agnostic: works for any project that uses the tag suffix, regardless
+    of how the rest of the line is structured (e.g. `**type**: label` vs
+    `**[P0] task:slug** Title`). Use this for cross-format auto-pin operations
+    like `apply_auto_pins`; use `parse_checkbox_tasks` when you also need
+    structured access to `task_type` (ktorobi-style format).
+    """
+
+    line_no: int
+    raw: str
+    status: str
+    policy: str
+    cycle: int
+
+    @property
+    def is_open(self) -> bool:
+        return self.status == " "
+
+
+def parse_auto_pin_lines(text: str) -> list[AutoPinLine]:
+    """Find every `- [ ]` / `- [x]` line containing an `(auto-pin …)` tag.
+
+    Project-format-agnostic — relies only on the tag, not on the surrounding
+    label structure.
+    """
+    out: list[AutoPinLine] = []
+    for i, line in enumerate(text.splitlines()):
+        m = CHECKBOX_PREFIX_RE.match(line)
+        if not m:
+            continue
+        pin = AUTO_PIN_RE.search(line)
+        if not pin:
+            continue
+        out.append(
+            AutoPinLine(
+                line_no=i,
+                raw=line,
+                status=" " if m.group(1) != "x" else "x",
+                policy=pin.group(2),
+                cycle=int(pin.group(1)),
+            )
+        )
+    return out
+
+
+def apply_auto_pins(
+    tasks_text: str,
+    new_pins: list[AutoPin],
+    *,
+    current_cycle: int,
+    consumed_policies: set[str],
+) -> str:
+    """Rewrite tasks.md head with the new pin set.
+
+    - Existing auto-pinned tasks whose policy ID is in `consumed_policies`
+      (and which are still `- [ ]`) are removed: the current cycle satisfied
+      them.
+    - Existing auto-pinned tasks whose policy re-triggered are replaced (the
+      new pin's `cycle=` value will be fresher).
+    - Operator-written lines (no `auto-pin` tag) are never modified.
+    - New pins are inserted at the first checkbox-line position, sorted by
+      policy id (lexicographic on the `Pn` suffix).
+
+    Project-agnostic: scans for the `(auto-pin …)` tag rather than relying on
+    any specific task-label structure.
+    """
+    pin_policies = {p.policy for p in new_pins}
+    lines = tasks_text.splitlines()
+    drop_lines: set[int] = set()
+    for t in parse_auto_pin_lines(tasks_text):
+        if t.policy in pin_policies or (t.is_open and t.policy in consumed_policies):
+            drop_lines.add(t.line_no)
+    kept = [ln for i, ln in enumerate(lines) if i not in drop_lines]
+    if not new_pins:
+        return "\n".join(kept) + ("\n" if tasks_text.endswith("\n") else "")
+    ordered = sorted(new_pins, key=_policy_sort_key)
+    pin_text = [p.render() for p in ordered]
+    insert_at = _find_pin_insertion_point(kept)
+    out = kept[:insert_at] + pin_text + ([""] if pin_text else []) + kept[insert_at:]
+    return "\n".join(out) + ("\n" if tasks_text.endswith("\n") else "")
+
+
+def _policy_sort_key(pin: AutoPin) -> tuple[int, str]:
+    m = re.match(r"P(\d+)", pin.policy)
+    if m:
+        return (int(m.group(1)), pin.policy)
+    return (10**9, pin.policy)
+
+
+def _find_pin_insertion_point(lines: list[str]) -> int:
+    for i, ln in enumerate(lines):
+        if CHECKBOX_PREFIX_RE.match(ln):
+            return i
+    return len(lines)
+
+
+__all__ = [
+    "AUTO_PIN_RE",
+    "AutoPin",
+    "AutoPinLine",
+    "CHECKBOX_PREFIX_RE",
+    "CYCLE_HDR_RE",
+    "CheckboxTask",
+    "CycleBlock",
+    "TASK_LINE_RE",
+    "TASK_TYPE_BODY_RE",
+    "apply_auto_pins",
+    "dedupe_cycles",
+    "find_first_open_task",
+    "parse_auto_pin_lines",
+    "parse_checkbox_tasks",
+    "parse_cycle_blocks",
+]

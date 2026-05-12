@@ -40,7 +40,9 @@ def _make_config(tmp_path: Path, **kwargs) -> RalphConfig:
     prompts.mkdir(exist_ok=True)
 
     template = prompts / "orient.md"
-    template.write_text("# orient\nDo orient work.\n")
+    # Include confirmation token so the run()-time prompt audit (which now
+    # gates startup) accepts this minimal stub. See prompt_audit.py.
+    template.write_text("# orient\nDo orient work.\nEnd with ORIENT_CONFIRMED: ...\n")
 
     step = StepConfig(
         name="orient",
@@ -497,6 +499,36 @@ class TestRunGuard:
 
         results = loop.run(budget=1, resume=True)
         # Should exit immediately (no pending tasks) without raising
+        assert isinstance(results, list)
+
+    def test_prompt_audit_errors_block_startup(self, tmp_path, monkeypatch):
+        # Guards the 2026-05-12 finalize regression: when a prompt has the
+        # confirmation_token only inside a runner-owned Write block, the
+        # loop now refuses to start. Operator must either fix the prompt
+        # or set RALPH_PROMPT_AUDIT_STRICT=0 (escape hatch).
+        loop = _make_loop(tmp_path)
+        loop.config.steps[0].prompt_template.write_text(
+            "## Output\n"
+            "Write `ralph/steps/orient.md`:\n"
+            "\n"
+            "---\n"
+            "ORIENT_CONFIRMED: cycle=<N>\n"
+            "---\n"
+        )
+        monkeypatch.delenv("RALPH_PROMPT_AUDIT_STRICT", raising=False)
+        with pytest.raises(RuntimeError, match="Prompt audit found"):
+            loop.run(budget=1)
+
+    def test_prompt_audit_bypass_via_env(self, tmp_path, monkeypatch):
+        loop = _make_loop(tmp_path)
+        loop.state.set_cycle_count(1)
+        loop.state.tasks_file.write_text("")  # exit immediately
+        loop.config.steps[0].prompt_template.write_text(
+            "Write `ralph/steps/orient.md`:\n\nORIENT_CONFIRMED: cycle=<N>\n"
+        )
+        monkeypatch.setenv("RALPH_PROMPT_AUDIT_STRICT", "0")
+        # No RuntimeError despite the prompt-audit error.
+        results = loop.run(budget=1, resume=True)
         assert isinstance(results, list)
 
 

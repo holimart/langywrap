@@ -125,6 +125,24 @@ class RalphLoop:
         self._warn_redundant_enrichment()
         self._verify_graphify_health()
 
+        import os as _os
+
+        from langywrap.ralph.prompt_audit import (
+            audit_prompt_contracts,
+            format_findings,
+        )
+
+        prompt_findings = audit_prompt_contracts(self.config)
+        self._log(format_findings(prompt_findings))
+        errors = [f for f in prompt_findings if f.severity == "error"]
+        strict = _os.environ.get("RALPH_PROMPT_AUDIT_STRICT", "1") not in ("0", "")
+        if errors and strict:
+            raise RuntimeError(
+                f"Prompt audit found {len(errors)} error(s) — refusing to start the "
+                "loop. Re-run with `ralph run --dry-run` to inspect, then fix the "
+                "prompts. Set RALPH_PROMPT_AUDIT_STRICT=0 to bypass (not recommended)."
+            )
+
         for cycle_num in range(start_cycle, end_cycle + 1):
             pending = self.state.pending_count()
             if pending == 0:

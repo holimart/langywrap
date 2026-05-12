@@ -54,6 +54,25 @@ _RUNNER_OWNED_STEPS_PATH_RE = re.compile(
     re.VERBOSE,
 )
 
+# A directive telling the agent the confirmation token belongs in its
+# stdout reply (not a file the runner clobbers). The runner greps the
+# token from the response stream; if the prompt only ever asks the agent
+# to ``Write`` the token into ``ralph/steps/<X>.md``, the runner's own
+# response-mirror overwrites it and the token vanishes (the 2026-05-12
+# finalize regression).
+_STDOUT_REPLY_DIRECTIVE_RE = re.compile(
+    r"""(?ix)
+    end \s+ (?: your \s+ )? reply \s+ with
+    | (?: in | as ) \s+ (?: your \s+ )? (?: reply | response | stdout | output \s+ stream )
+    | echo \s+ (?: in | to | as ) \s+ (?: stdout | reply | response | your \s+ reply )
+    | emit \s+ (?: in | as | to ) \s+ (?: stdout | reply | response | your \s+ reply )
+    | print \s+ (?: this | the \s+ block | the \s+ line ) \s+ (?: in | to ) \s+ stdout
+    | the \s+ runner \s+ greps .* (?: stdout | response )
+    | first \s+ non-blank \s+ line \s+ of \s+ (?:your \s+ )? (?: reply | response )
+    """,
+    re.VERBOSE,
+)
+
 
 # Regex helpers --------------------------------------------------------------
 
@@ -249,7 +268,15 @@ def _rule_prompt_writes_runner_file(
 ) -> list[Finding]:
     """Prompt tells the agent to Write a ``ralph/steps/<X>.md`` path that the
     runner already writes from the model's text response. Two writers, one
-    file → last write wins → silent divergence from intent."""
+    file → last write wins → silent divergence from intent.
+
+    Severity is ``warn``: the historical Whitehacky prompts pair a runner-
+    file Write with an "AND ralph/<state>.md" canonical write that does
+    matter, so flagging every occurrence as an error is too noisy. The
+    sharper ``CONFIRMATION_TOKEN_IN_RUNNER_FILE_BLOCK`` rule below is the
+    gating one — it only fires when the runner-file Write is the *only*
+    home for the step's confirmation token.
+    """
     if step.builtin:
         return []
     findings: list[Finding] = []
@@ -258,7 +285,7 @@ def _rule_prompt_writes_runner_file(
         findings.append(
             Finding(
                 step=step.name,
-                severity="error",
+                severity="warn",
                 rule="PROMPT_WRITES_RUNNER_FILE",
                 detail=(
                     f"Prompt instruction {snippet!r} targets a file under "
@@ -275,6 +302,83 @@ def _rule_prompt_writes_runner_file(
     return findings
 
 
+def _token_only_inside_runner_write_block(
+    prompt: str, token: str, max_block_chars: int = 2000
+) -> bool:
+    """True when every occurrence of ``token`` sits within
+    ``max_block_chars`` of a preceding runner-owned Write directive.
+
+    Used by ``CONFIRMATION_TOKEN_IN_RUNNER_FILE_BLOCK`` to detect the
+    exact 2026-05-12 finalize bug: the prompt's only home for
+    ``FINALIZE_CONFIRMED:`` was inside a ``Write `ralph/steps/finalize.md`:``
+    template block. When the model writes the file directly (which the
+    runner then clobbers with the model's stdout reply), the token never
+    reaches stdout and the runner classifies the cycle as failed.
+    """
+    if not token or token not in prompt:
+        return False
+    write_ends = [m.end() for m in _RUNNER_OWNED_STEPS_PATH_RE.finditer(prompt)]
+    if not write_ends:
+        return False
+    for tok_match in re.finditer(re.escape(token), prompt):
+        pos = tok_match.start()
+        # Token before any runner-owned Write — must be in body text. Safe.
+        if all(end > pos for end in write_ends):
+            return False
+        nearest_write_end = max(end for end in write_ends if end <= pos)
+        if pos - nearest_write_end > max_block_chars:
+            # Token reappears far past any Write directive — outside the
+            # block, so the prompt does have a body mention. Safe.
+            return False
+    return True
+
+
+def _rule_confirmation_token_in_runner_file_block(
+    step: "StepConfig", prompt: str, _cfg: "RalphConfig"
+) -> list[Finding]:
+    """Gating rule for the 2026-05-12 finalize regression.
+
+    Fires (error) when ALL of:
+      * step has a ``confirmation_token``
+      * the prompt contains at least one ``Write ralph/steps/<X>.md``
+        directive
+      * every occurrence of the token is *inside* a Write-block neighbourhood
+      * the prompt does NOT contain an explicit "End your reply with…" /
+        "in your stdout response" directive
+
+    In that shape, the agent's only home for the token is the file the
+    runner overwrites with its own response-mirror, so the runner never
+    sees the token in stdout. Concrete failure trail:
+    ``ralph_master_20260511_223554.log`` — three consecutive
+    ``finalize: token 'FINALIZE_CONFIRMED:' NOT FOUND`` entries triggered
+    ``max_consecutive_failed_cycles=3`` and stopped the loop.
+    """
+    token = step.confirmation_token
+    if not token or step.builtin:
+        return []
+    if not _token_only_inside_runner_write_block(prompt, token):
+        return []
+    if _STDOUT_REPLY_DIRECTIVE_RE.search(prompt):
+        return []
+    return [
+        Finding(
+            step=step.name,
+            severity="error",
+            rule="CONFIRMATION_TOKEN_IN_RUNNER_FILE_BLOCK",
+            detail=(
+                f"The only home for {token!r} in this prompt is inside a "
+                f"`Write ralph/steps/<X>.md` block. The runner overwrites "
+                f"ralph/steps/{step.name}.md with the model's stdout reply, "
+                f"so the Write is clobbered and the token never lands where "
+                f"the runner greps. Add an explicit 'End your reply with the "
+                f"block below' / 'in your stdout response' directive so the "
+                f"agent emits the token in its reply. See "
+                f"docs/solutions/ for the 2026-05-12 finalize regression."
+            ),
+        )
+    ]
+
+
 _RULES = [
     _rule_write_plan_target,
     _rule_confirmation_token_in_prompt,
@@ -282,6 +386,7 @@ _RULES = [
     _rule_plan_must_contain_in_prompt,
     _rule_cycle_type_labels_in_source_prompt,
     _rule_prompt_writes_runner_file,
+    _rule_confirmation_token_in_runner_file_block,
 ]
 
 
@@ -382,5 +487,12 @@ def format_findings(findings: list[Finding]) -> str:
         lines.append(
             f"    [{f.severity.upper()}] {f.step} — {f.rule}\n      {f.detail}"
         )
+    lines.append("")
+    lines.append(
+        "  For a deeper semantic audit (input chains, tool grants, model "
+        "suitability) run one of:"
+    )
+    lines.append("    claude /ralph-prompt-audit")
+    lines.append('    opencode run "/ralph-prompt-audit"')
     lines.append("")
     return "\n".join(lines)

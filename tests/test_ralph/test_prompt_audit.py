@@ -247,6 +247,8 @@ class TestPromptWritesRunnerFile:
     def test_write_steps_plan_md_flagged(self, tmp_path: Path) -> None:
         # The current ktorobi/whitehacky pattern: prompt tells the agent to
         # Write a ralph/steps/<X>.md path that the runner already owns.
+        # Now classified as a fragility warning (the gating "error" lives in
+        # the sharper CONFIRMATION_TOKEN_IN_RUNNER_FILE_BLOCK rule).
         step = _make_step(
             tmp_path,
             "plan_profile",
@@ -259,7 +261,7 @@ class TestPromptWritesRunnerFile:
         findings = audit_prompt_contracts(cfg)
         match = [f for f in findings if f.rule == "PROMPT_WRITES_RUNNER_FILE"]
         assert match
-        assert match[0].severity == "error"
+        assert match[0].severity == "warn"
         assert "ralph/steps" in match[0].detail or "steps/" in match[0].detail.lower()
 
     def test_only_state_dir_write_passes(self, tmp_path: Path) -> None:
@@ -298,6 +300,125 @@ class TestPromptWritesRunnerFile:
         cfg = _make_cfg(tmp_path, [step])
         rules = {f.rule for f in audit_prompt_contracts(cfg)}
         assert "PROMPT_WRITES_RUNNER_FILE" not in rules
+
+
+# Rule CONFIRMATION_TOKEN_IN_RUNNER_FILE_BLOCK -------------------------------
+
+
+class TestConfirmationTokenInRunnerFileBlock:
+    """Guards the 2026-05-12 finalize regression: prompt's only home for the
+    confirmation token was inside a ``Write ralph/steps/finalize.md:`` block,
+    which the runner overwrites with the model's stdout reply. The token
+    never reached the runner's grep and three cycles failed in a row."""
+
+    def test_token_only_inside_write_block_errors(self, tmp_path: Path) -> None:
+        prompt = (
+            "## Output\n"
+            "1. Update ralph/tasks.md.\n"
+            "2. Write `ralph/steps/finalize.md`:\n"
+            "\n"
+            "---\n"
+            "# Finalize Summary\n"
+            "FINALIZE_CONFIRMED: cycle=<N> outcome=<C>\n"
+            "---\n"
+        )
+        step = _make_step(
+            tmp_path,
+            "finalize",
+            prompt,
+            confirmation_token="FINALIZE_CONFIRMED:",
+        )
+        cfg = _make_cfg(tmp_path, [step])
+        findings = audit_prompt_contracts(cfg)
+        match = [
+            f for f in findings if f.rule == "CONFIRMATION_TOKEN_IN_RUNNER_FILE_BLOCK"
+        ]
+        assert match, f"expected gating finding, got {findings}"
+        assert match[0].severity == "error"
+        assert "FINALIZE_CONFIRMED:" in match[0].detail
+
+    def test_explicit_reply_directive_silences_rule(self, tmp_path: Path) -> None:
+        # The shape applied to the post-fix step4_finalize.md: keeps the
+        # template block but the directive points at the model's stdout
+        # reply rather than a Write of the runner-owned file.
+        prompt = (
+            "## Output\n"
+            "End your reply with the block below (do NOT write it to a file):\n"
+            "\n"
+            "---\n"
+            "FINALIZE_CONFIRMED: cycle=<N>\n"
+            "---\n"
+        )
+        step = _make_step(
+            tmp_path,
+            "finalize",
+            prompt,
+            confirmation_token="FINALIZE_CONFIRMED:",
+        )
+        cfg = _make_cfg(tmp_path, [step])
+        rules = {f.rule for f in audit_prompt_contracts(cfg)}
+        assert "CONFIRMATION_TOKEN_IN_RUNNER_FILE_BLOCK" not in rules
+
+    def test_reply_directive_via_in_your_response(self, tmp_path: Path) -> None:
+        prompt = (
+            "Write `ralph/steps/execute.md` with the same content as in your "
+            "response, starting with EXECUTE_CONFIRMED:\n"
+        )
+        step = _make_step(
+            tmp_path,
+            "execute",
+            prompt,
+            confirmation_token="EXECUTE_CONFIRMED:",
+        )
+        cfg = _make_cfg(tmp_path, [step])
+        rules = {f.rule for f in audit_prompt_contracts(cfg)}
+        assert "CONFIRMATION_TOKEN_IN_RUNNER_FILE_BLOCK" not in rules
+
+    def test_token_appearing_before_write_is_safe(self, tmp_path: Path) -> None:
+        # If the prompt references the token in body text (e.g. "must contain
+        # PLAN_CONFIRMED:") before any Write directive, the agent has at
+        # least one prompt-level anchor outside the clobbered file path.
+        prompt = (
+            "## Inputs\n"
+            "- `ralph/plan.md` (must contain `PLAN_CONFIRMED: ... task_type=...`)\n"
+            "\n"
+            "## Output\n"
+            "Write `ralph/steps/plan.md`:\n"
+            "\n"
+            "PLAN_CONFIRMED: cycle=<N>\n"
+        )
+        step = _make_step(
+            tmp_path,
+            "plan",
+            prompt,
+            output_as="plan",
+            confirmation_token="PLAN_CONFIRMED:",
+        )
+        cfg = _make_cfg(tmp_path, [step])
+        rules = {f.rule for f in audit_prompt_contracts(cfg)}
+        assert "CONFIRMATION_TOKEN_IN_RUNNER_FILE_BLOCK" not in rules
+
+    def test_no_write_directive_does_not_fire(self, tmp_path: Path) -> None:
+        step = _make_step(
+            tmp_path,
+            "orient",
+            "Decide cycle type. End with ORIENT_CONFIRMED: <reason>",
+            confirmation_token="ORIENT_CONFIRMED:",
+        )
+        cfg = _make_cfg(tmp_path, [step])
+        rules = {f.rule for f in audit_prompt_contracts(cfg)}
+        assert "CONFIRMATION_TOKEN_IN_RUNNER_FILE_BLOCK" not in rules
+
+    def test_empty_token_skipped(self, tmp_path: Path) -> None:
+        step = _make_step(
+            tmp_path,
+            "fix",
+            "Write `ralph/steps/fix.md` with notes.",
+            confirmation_token="",
+        )
+        cfg = _make_cfg(tmp_path, [step])
+        rules = {f.rule for f in audit_prompt_contracts(cfg)}
+        assert "CONFIRMATION_TOKEN_IN_RUNNER_FILE_BLOCK" not in rules
 
 
 # Cross-config rules ---------------------------------------------------------
@@ -393,6 +514,8 @@ class TestFormatFindings:
     def test_empty_returns_ok(self) -> None:
         out = format_findings([])
         assert "OK" in out
+        # The "deeper audit" pointer should NOT appear when everything is fine.
+        assert "/ralph-prompt-audit" not in out
 
     def test_groups_errors_before_warnings(self) -> None:
         findings = [
@@ -401,3 +524,11 @@ class TestFormatFindings:
         ]
         out = format_findings(findings)
         assert out.index("[ERROR]") < out.index("[WARN]")
+
+    def test_points_at_skill_when_findings_exist(self) -> None:
+        findings = [Finding(step="x", severity="warn", rule="R", detail="d")]
+        out = format_findings(findings)
+        # The skill pointer must be there so operators discover the LLM-level
+        # audit even on warn-only output.
+        assert "/ralph-prompt-audit" in out
+        assert "claude" in out or "opencode" in out
