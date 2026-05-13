@@ -167,16 +167,68 @@ answering if the user asked for repair or restart:
   without explicit permission.
 - Before restart, run the same narrow validation that failed, for example
   `langywrap.ralph.lint_tasks` with the downstream repo's configured task types.
+- For unified task-format lint failures, compare HEAD, staged, and unstaged
+  `tasks.md` before blaming the generator. Dirty task-ledger rewrites can
+  reintroduce pre-migration headers; normalize only the malformed headers and
+  preserve surrounding local edits. See
+  `docs/solutions/2026-05-13_ralph_tasks_unified_format_regression.md`.
 - Restart inside the existing tmux pane when possible, using `--no-tmux` so the
   command runs in that pane instead of nesting tmux sessions.
 - After restart, re-run `inspect_projects.py --status-only <project>` and verify
   the status is `running` or that it has progressed past the previous failure.
+
+When the user asks to resume paused loops across all projects, start with:
+
+```bash
+scripts/inspect-projects/inspect_projects.py --status-only --model-details
+```
+
+Resume only projects that are genuinely actionable:
+
+- `running` means already active; do not restart unless explicitly asked.
+- `awaiting-input-or-finished` with `active_process: false` is resumable if tasks are pending.
+- `not-running` is startable if tasks are pending.
+- An idle pane with `Pending: (none)` or only completed tasks is finished, not paused.
+- If the user specifies cycle count, pass `--budget N`; do not rely on defaults.
+
+If a project stopped because `tasks.md` says `Pending: (none)`, do not assume the
+methodology is exhausted. Run an empty-queue audit before accepting loop
+completion:
+
+- Read the last 20 rows of `ralph/progress.md`.
+- Search for skipped tiers, weak/no-signal scans, refuted cheap-tool hits,
+  `needs-poc`, informational repros, and "no new follow-ups".
+- Check whether each scan/deepllm/repro produced a learning decision: detector,
+  suppression, language/tier support, repro, deeper audit, or explicit "no
+  reusable lesson".
+- Check `ralph/findings.md` has structured rows for recent scans, including tier
+  skip reasons and detector/suppression decisions.
+- If backlog has viable programs, ensure at least one `caseinit` or discovery task
+  is queued unless methodology/tooling gaps should be handled first.
+
+Reference lesson: `docs/solutions/2026-05-13_ralph_empty_queue_methodology_audit.md`.
+
+Useful local resume commands:
+
+```bash
+tmux send-keys -t ralph-project "cd /path/to/project && langywrap ralph run --resume --budget 50 ." C-m
+cd /path/to/project && langywrap ralph run --resume --budget 50 .
+```
+
+The first form resumes in an existing pane. The second form starts a new tmux
+session when no session exists, because the Ralph CLI launches tmux by default
+outside tmux.
 
 Useful restart pattern for a remote pane:
 
 ```bash
 ssh user@host 'tmux send-keys -t ralph-project "cd /path/to/project && path/to/langywrap ralph run -n 50 --resume --no-tmux ." C-m'
 ```
+
+For remote session control, quote the whole remote command. If the `&&` is not
+inside the quoted SSH command, the remote shell may run `langywrap` outside tmux
+and fail with `bash: line 1: langywrap: command not found` even though the tmux
+pane would have had the right environment.
 
 To intentionally stop and restart a remote Ralph loop in the existing pane, send
 Ctrl-C first, then send the resume command with `--no-tmux` so it reuses the pane
@@ -194,6 +246,12 @@ models with OpenAI GPT-5.4 during a remote restart:
 
 ```bash
 ssh user@host 'tmux send-keys -t ralph-project "cd /path/to/project && /path/to/langywrap/.venv/bin/langywrap ralph run --resume --no-tmux --replace-model '\''*kimi*=openai/gpt-5.4'\'' ." C-m'
+```
+
+Example replacing all Kimi slots with GPT-5.3 Codex for a 50-cycle remote resume:
+
+```bash
+ssh user@host 'tmux send-keys -t ralph-project "cd /path/to/project && langywrap ralph run --resume --budget 50 --replace-model \*kimi\*=openai/gpt-5.3-codex ." C-m'
 ```
 
 After restart, verify both liveness and effective provider mix:

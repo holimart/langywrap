@@ -97,6 +97,11 @@ When a loop is failed and the user asks for repair or restart:
 - If status is `running`, do not restart; report current step/heartbeat evidence.
 - For generated task/helper failures, inspect the langywrap generator before
   blaming the downstream repo.
+- For unified task-format lint failures, compare HEAD, staged, and unstaged
+  `tasks.md` before blaming the generator. Dirty task-ledger rewrites can
+  reintroduce pre-migration headers; normalize only malformed headers and
+  preserve local edits. See
+  `docs/solutions/2026-05-13_ralph_tasks_unified_format_regression.md`.
 - For remote projects, verify the sibling remote `langywrap` has any needed source
   fix because the project venv may import from that sibling checkout.
 - Make only targeted remote edits when explicitly asked to repair or restart.
@@ -106,11 +111,42 @@ When a loop is failed and the user asks for repair or restart:
 - Re-run `scripts/inspect-projects/inspect_projects.py --status-only <project>`
   and confirm the loop is `running` or past the old failure.
 
+For all-project resume requests, inspect first with model details:
+
+```bash
+scripts/inspect-projects/inspect_projects.py --status-only --model-details
+```
+
+Resume only actionable loops: `running` is already active, `awaiting-input-or-finished`
+with no active process is resumable when tasks are pending, `not-running` is
+startable when tasks are pending, and an idle project with `Pending: (none)` is
+finished rather than paused. If the user gives a cycle count, pass `--budget N`
+explicitly.
+
+Before accepting `Pending: (none)` as truly finished, run the empty-queue
+methodology audit from
+`docs/solutions/2026-05-13_ralph_empty_queue_methodology_audit.md`: inspect the
+last 20 `progress.md` rows for skipped tiers, no-signal scans, refuted cheap-tool
+hits, `needs-poc`, informational repros, and missing learning decisions; check
+`findings.md` and backlog; queue detector/suppression/tier-support, ledger,
+caseinit, or discovery tasks if gaps remain.
+
+Local resume commands:
+
+```bash
+tmux send-keys -t ralph-project "cd /path/to/project && langywrap ralph run --resume --budget 50 ." C-m
+cd /path/to/project && langywrap ralph run --resume --budget 50 .
+```
+
 Remote restart pattern:
 
 ```bash
 ssh user@host 'tmux send-keys -t ralph-project "cd /path/to/project && path/to/langywrap ralph run -n 50 --resume --no-tmux ." C-m'
 ```
+
+Quote the whole SSH command. If `&&` escapes the remote quoted command, the SSH
+shell can run `langywrap` outside tmux and fail with `bash: line 1: langywrap:
+command not found` even when the pane environment is fine.
 
 Remote stop/restart in the same pane:
 
@@ -124,6 +160,12 @@ model/alias or shell glob. Quote globs. Example replacing Kimi with GPT-5.4:
 
 ```bash
 ssh user@host 'tmux send-keys -t ralph-project "cd /path/to/project && /path/to/langywrap/.venv/bin/langywrap ralph run --resume --no-tmux --replace-model '\''*kimi*=openai/gpt-5.4'\'' ." C-m'
+```
+
+Example replacing Kimi with GPT-5.3 Codex for a 50-cycle remote resume:
+
+```bash
+ssh user@host 'tmux send-keys -t ralph-project "cd /path/to/project && langywrap ralph run --resume --budget 50 --replace-model \*kimi\*=openai/gpt-5.3-codex ." C-m'
 ```
 
 Verify with:
