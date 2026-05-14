@@ -225,6 +225,53 @@ class Retry(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# AppendGuard — protect append-only state files from finalize regressions
+# ---------------------------------------------------------------------------
+
+
+class AppendGuard(BaseModel):
+    """Reject a step whose run shrinks an append-only state file.
+
+    Snapshots the file at step start and re-counts at step end. If the
+    entry count drops below ``before * (1 - tolerance_pct)`` or below
+    ``min_entries``, the step is marked unconfirmed (and aborts the
+    cycle if the step has ``fail_fast=True``).
+
+    Designed to catch finalize-style regressions where an LLM
+    "rewrote" instead of "appended": e.g. BSDconj cycle 189 reduced
+    research/ralph/progress.md from 2854 lines to 14, deleting 188
+    cycles of history; the whitehacky trainscans manifest dropped
+    from 42 detector regression targets to 6.
+
+    Usage::
+
+        Step("finalize", ..., append_guards=[
+            AppendGuard(path="research/ralph/progress.md"),
+            AppendGuard(path="research/ralph/tasks.md",
+                        entry_pattern=r"^- \\[[ x]\\]"),
+        ])
+    """
+
+    path: str
+    """File path relative to ``project_dir``. Missing files count as 0
+    entries (so the first cycle that creates the file always passes)."""
+
+    entry_pattern: str = ""
+    """Regex matched per line to define "entries". Empty = count
+    non-empty lines. Use e.g. ``r"^## Cycle "`` to count cycle blocks
+    in progress.md or ``r"^\\s*-\\s*id:"`` to count YAML target rows."""
+
+    tolerance_pct: float = 0.0
+    """Allowed shrinkage as a fraction of the pre-step count (0.0
+    means no shrink permitted; 0.1 allows up to 10% drop)."""
+
+    min_entries: int = 0
+    """Absolute floor — entries must not drop below this regardless of
+    tolerance. Useful when the file should always carry at least N
+    cycles/tasks/targets."""
+
+
+# ---------------------------------------------------------------------------
 # Step
 # ---------------------------------------------------------------------------
 
@@ -376,6 +423,14 @@ class Step(BaseModel):
     preflight_lint: bool = True
     """When ``builtin='inline_orient'``: run the linter in autofix mode before
     picking. Hard-fail aborts the step."""
+
+    # -- Append-only guards -------------------------------------------------
+
+    append_guards: list[AppendGuard] = Field(default_factory=list)
+    """Files this step must not shrink (e.g. progress.md, tasks.md). Each
+    guard is snapshotted before the step and re-counted after; on shrink
+    beyond ``tolerance_pct``/``min_entries`` the step is marked unconfirmed.
+    See :class:`AppendGuard`."""
 
     def __init__(self, name: str = "", **kwargs: Any) -> None:
         if "token" in kwargs and "confirmation_token" not in kwargs:
@@ -991,6 +1046,10 @@ class Pipeline(BaseModel):
             max_active=step.max_active,
             allow_legacy_format=step.allow_legacy_format,
             preflight_lint=step.preflight_lint,
+            append_guards=[
+                g.model_dump() if isinstance(g, BaseModel) else dict(g)
+                for g in step.append_guards
+            ],
         )
 
     def _loop_to_step_configs(self, loop: Loop, prompts_dir: Path) -> list[StepConfig]:  # noqa: F821

@@ -143,6 +143,14 @@ class RalphLoop:
                 "prompts. Set RALPH_PROMPT_AUDIT_STRICT=0 to bypass (not recommended)."
             )
 
+        injection_errors = self._audit_future_task_injections(start_cycle, end_cycle)
+        if injection_errors:
+            joined = "\n".join(f"  - {err}" for err in injection_errors)
+            raise RuntimeError(
+                "Task injection preflight found invalid configured task template(s):\n"
+                f"{joined}"
+            )
+
         for cycle_num in range(start_cycle, end_cycle + 1):
             pending = self.state.pending_count()
             if pending == 0:
@@ -356,6 +364,9 @@ class RalphLoop:
                 "cycle_prompt_extra": step.prompt_extra,
             }
 
+            # Snapshot append-only files before step runs.
+            pre_guard_counts = self._snapshot_append_guards(step)
+
             # Open per-step log + print Engine/Tools/Log/Monitor banner fields
             step_log = self._step_logger.open_step(
                 step.name,
@@ -527,6 +538,14 @@ class RalphLoop:
                         abort_remaining = True
                         continue
 
+            # Append-only guard: reject steps that shrank a protected file.
+            guard_errors = self._check_append_guards(step, pre_guard_counts)
+            if guard_errors:
+                for err in guard_errors:
+                    self._log(f"  [{step.name}] APPEND-GUARD: {err}")
+                confirmed = False
+                result.confirmed_tokens[output_key] = False
+
             if confirmed:
                 confirmed_outputs[output_key] = output
                 self._log(f"  └── {step.name}: CONFIRMED ({step.confirmation_token})\n")
@@ -538,7 +557,7 @@ class RalphLoop:
                     self._log(f"  └── {step.name}: done (no token check)\n")
 
             # Fail-fast check
-            if step.fail_fast and not success:
+            if step.fail_fast and not confirmed:
                 self._log(f"  └── {step.name}: FAIL-FAST — aborting remaining steps\n")
                 abort_remaining = True
 
@@ -999,6 +1018,53 @@ class RalphLoop:
     # Dry run
     # ------------------------------------------------------------------
 
+    def _audit_future_task_injections(self, start_cycle: int, end_cycle: int) -> list[str]:
+        """Render configured future injections and validate their checkbox format."""
+        from datetime import date
+
+        from langywrap.ralph.state import (
+            render_hygiene_task_content,
+            validate_injected_task_content,
+        )
+
+        errors: list[str] = []
+        if end_cycle < start_cycle:
+            return errors
+
+        qg_cmd = self.config.quality_gate.command if self.config.quality_gate else ""
+        today = date.today().isoformat()
+
+        for cycle_num in range(start_cycle, end_cycle + 1):
+            if self.config.hygiene_every_n and cycle_num % self.config.hygiene_every_n == 0:
+                try:
+                    content = render_hygiene_task_content(
+                        cycle_num,
+                        template=self.config.hygiene_template,
+                        quality_gate_cmd=qg_cmd,
+                        today=today,
+                    )
+                    validate_injected_task_content(content, source="hygiene task")
+                except Exception as exc:
+                    errors.append(f"cycle {cycle_num} hygiene: {exc}")
+
+            for pt in self.config.periodic_tasks:
+                every = pt.get("every", 0)
+                if not every or cycle_num % every != 0:
+                    continue
+                marker = pt.get("marker", "periodic")
+                template = pt.get("template", "")
+                if not template:
+                    continue
+                try:
+                    content = template.format(cycle=cycle_num, date=today)
+                    full_marker = f"{marker}-cycle-{cycle_num}"
+                    if full_marker not in content:
+                        content = content.rstrip() + f" <!-- {full_marker} -->\n"
+                    validate_injected_task_content(content, source=f"periodic task `{marker}`")
+                except Exception as exc:
+                    errors.append(f"cycle {cycle_num} periodic `{marker}`: {exc}")
+        return errors
+
     def dry_run(self) -> dict:
         """Validate setup without running a Ralph cycle.
 
@@ -1019,6 +1085,18 @@ class RalphLoop:
 
         prompt_findings = audit_prompt_contracts(self.config)
         self._log(format_findings(prompt_findings))
+        injection_errors = self._audit_future_task_injections(
+            self.state.get_cycle_count() + 1,
+            self.state.get_cycle_count() + max(1, self.config.budget),
+        )
+        if injection_errors:
+            self._log(
+                "  [task injection audit] "
+                f"{len(injection_errors)} invalid configured injection(s):\n"
+                + "\n".join(f"    - {err}" for err in injection_errors)
+            )
+        else:
+            self._log("  [task injection audit] OK — configured injected tasks use unified format.")
 
         report: dict = {
             "project_dir": str(self.config.project_dir),
@@ -1031,6 +1109,7 @@ class RalphLoop:
             "quality_gate": None,
             "tool_discovery": tool_report,
             "prompt_contracts": [f.as_dict() for f in prompt_findings],
+            "task_injection_errors": injection_errors,
         }
         from langywrap.ralph.model_mix import config_model_mix
 
@@ -1652,6 +1731,69 @@ class RalphLoop:
                 return False, f"plan does not mention cycle {cycle_num}"
 
         return True, ""
+
+    # ------------------------------------------------------------------
+    # Append-only guards
+    # ------------------------------------------------------------------
+
+    def _snapshot_append_guards(self, step: Any) -> dict[str, int]:
+        """Count entries in each guarded path before the step runs.
+
+        Returns a path -> count mapping. Missing files report 0 (so the
+        first cycle that creates the file always passes the post-check
+        as long as it ended up non-empty).
+        """
+        guards = getattr(step, "append_guards", None) or []
+        counts: dict[str, int] = {}
+        for raw in guards:
+            spec = raw if isinstance(raw, dict) else raw.model_dump()
+            path = spec["path"]
+            counts[path] = self._count_guard_entries(path, spec.get("entry_pattern", ""))
+        return counts
+
+    def _check_append_guards(
+        self, step: Any, pre_counts: dict[str, int]
+    ) -> list[str]:
+        """Re-count guarded files after the step. Return human-readable
+        errors for any guard whose entry count dropped below the
+        configured tolerance or absolute floor.
+        """
+        guards = getattr(step, "append_guards", None) or []
+        errors: list[str] = []
+        for raw in guards:
+            spec = raw if isinstance(raw, dict) else raw.model_dump()
+            path = spec["path"]
+            pattern = spec.get("entry_pattern", "")
+            tol = float(spec.get("tolerance_pct", 0.0))
+            floor = int(spec.get("min_entries", 0))
+            before = pre_counts.get(path, 0)
+            after = self._count_guard_entries(path, pattern)
+            min_allowed = max(int(before * (1.0 - tol)), floor)
+            if after < min_allowed:
+                errors.append(
+                    f"{path}: count dropped {before} → {after} "
+                    f"(allowed floor: {min_allowed}). "
+                    f"The step appears to have rewritten an append-only file "
+                    f"instead of appending to it."
+                )
+        return errors
+
+    def _count_guard_entries(self, rel_path: str, pattern: str) -> int:
+        """Count lines in ``rel_path`` matching ``pattern`` (or all
+        non-empty lines when pattern is empty). Returns 0 if the file
+        is missing.
+        """
+        full = (self.config.project_dir / rel_path).resolve()
+        try:
+            text = full.read_text(encoding="utf-8", errors="replace")
+        except FileNotFoundError:
+            return 0
+        except OSError:
+            return 0
+        if not pattern:
+            return sum(1 for ln in text.splitlines() if ln.strip())
+        regex = re.compile(pattern)
+        return sum(1 for ln in text.splitlines() if regex.search(ln))
 
     # ------------------------------------------------------------------
     # Cycle type detection

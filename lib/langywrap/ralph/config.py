@@ -174,6 +174,13 @@ class StepConfig(BaseModel):
     preflight_lint: bool = True
     """``builtin='inline_orient'`` runs the linter in autofix mode first."""
 
+    # -- Append-only guards -------------------------------------------------
+
+    append_guards: list[dict] = Field(default_factory=list)
+    """List of ``{path, entry_pattern, tolerance_pct, min_entries}`` dicts.
+    Pydantic re-validates into ``AppendGuard`` objects at dispatch time.
+    Reject steps that shrink an append-only file like progress.md."""
+
 
 # ---------------------------------------------------------------------------
 # QualityGateConfig

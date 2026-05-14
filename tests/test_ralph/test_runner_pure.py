@@ -595,6 +595,58 @@ class TestDryRun:
         result = loop.dry_run()
         assert result["quality_gate"] is None
 
+    def test_reports_invalid_future_periodic_task_template(self, tmp_path):
+        loop = _make_loop(
+            tmp_path,
+            budget=5,
+            hygiene_every_n=None,
+            periodic_tasks=[
+                {
+                    "every": 3,
+                    "marker": "lookback",
+                    "template": "- [ ] **[P2] Process lookback — cycle {cycle}**",
+                }
+            ],
+        )
+        result = loop.dry_run()
+        assert result["task_injection_errors"]
+        assert "cycle 3 periodic `lookback`" in result["task_injection_errors"][0]
+
+    def test_accepts_valid_future_task_templates(self, tmp_path):
+        loop = _make_loop(
+            tmp_path,
+            budget=5,
+            periodic_tasks=[
+                {
+                    "every": 3,
+                    "marker": "lookback",
+                    "template": "- [ ] **[P2] task:lookback-cycle-{cycle}** [lookback] Process lookback",
+                }
+            ],
+        )
+        result = loop.dry_run()
+        assert result["task_injection_errors"] == []
+
+    def test_run_preflight_rejects_invalid_future_injection(self, tmp_path, monkeypatch):
+        loop = _make_loop(
+            tmp_path,
+            budget=5,
+            hygiene_every_n=None,
+            periodic_tasks=[
+                {
+                    "every": 3,
+                    "marker": "lookback",
+                    "template": "- [ ] **[P2] Process lookback — cycle {cycle}**",
+                }
+            ],
+        )
+        monkeypatch.setattr(loop, "_verify_tool_discovery", lambda: {})
+        monkeypatch.setattr(loop, "_warn_redundant_enrichment", lambda: None)
+        monkeypatch.setattr(loop, "_verify_graphify_health", lambda: None)
+
+        with pytest.raises(RuntimeError, match="Task injection preflight"):
+            loop.run()
+
 
 # ---------------------------------------------------------------------------
 # _print_review, _log_cycle_stats, _log_run_stats — smoke tests
@@ -637,3 +689,110 @@ class TestLoggingMethods:
         )
         r.files_accessed = {"execute": ["/src/foo.lean"]}
         loop._log_run_stats([r])  # should not raise
+
+
+# ---------------------------------------------------------------------------
+# Append-only guards
+# ---------------------------------------------------------------------------
+
+
+class TestAppendGuards:
+    """The append-guard catches finalize-style regressions like the
+    BSDconj cycle 189 incident (progress.md 2854 -> 14 lines) and the
+    whitehacky trainscans manifest reduction (42 -> 6 entries)."""
+
+    def _step_with_guard(self, **guard_kwargs):
+        from langywrap.ralph.config import StepConfig
+
+        guard = {"path": "ralph/progress.md", **guard_kwargs}
+        return StepConfig(
+            name="finalize",
+            prompt_template=Path("ralph/prompts/finalize.md"),
+            append_guards=[guard],
+        )
+
+    def test_no_shrink_passes(self, tmp_path):
+        loop = _make_loop(tmp_path)
+        progress = tmp_path / "ralph" / "progress.md"
+        progress.write_text("line 1\nline 2\nline 3\n")
+        step = self._step_with_guard()
+        before = loop._snapshot_append_guards(step)
+        # File unchanged after step.
+        errors = loop._check_append_guards(step, before)
+        assert errors == []
+
+    def test_shrink_default_zero_tolerance_fails(self, tmp_path):
+        loop = _make_loop(tmp_path)
+        progress = tmp_path / "ralph" / "progress.md"
+        progress.write_text("line 1\nline 2\nline 3\nline 4\n")
+        step = self._step_with_guard()
+        before = loop._snapshot_append_guards(step)
+        assert before == {"ralph/progress.md": 4}
+        # Simulate finalize wiping the file.
+        progress.write_text("line 1\n")
+        errors = loop._check_append_guards(step, before)
+        assert len(errors) == 1
+        assert "4 → 1" in errors[0]
+        assert "rewritten" in errors[0].lower()
+
+    def test_shrink_within_tolerance_passes(self, tmp_path):
+        loop = _make_loop(tmp_path)
+        progress = tmp_path / "ralph" / "progress.md"
+        progress.write_text("\n".join(f"line {i}" for i in range(10)) + "\n")
+        step = self._step_with_guard(tolerance_pct=0.5)
+        before = loop._snapshot_append_guards(step)
+        # 4 lines: 60% drop, exceeds 50% tolerance.
+        progress.write_text("a\nb\nc\nd\n")
+        errors = loop._check_append_guards(step, before)
+        assert len(errors) == 1
+        # 6 lines: 40% drop, within 50% tolerance.
+        progress.write_text("a\nb\nc\nd\ne\nf\n")
+        errors = loop._check_append_guards(step, before)
+        assert errors == []
+
+    def test_min_entries_floor_applies(self, tmp_path):
+        loop = _make_loop(tmp_path)
+        progress = tmp_path / "ralph" / "progress.md"
+        progress.write_text("\n".join(f"line {i}" for i in range(20)) + "\n")
+        # tolerance permits 50% drop (=>10 lines), but min_entries=15 raises floor.
+        step = self._step_with_guard(tolerance_pct=0.5, min_entries=15)
+        before = loop._snapshot_append_guards(step)
+        progress.write_text("\n".join(f"line {i}" for i in range(12)) + "\n")
+        errors = loop._check_append_guards(step, before)
+        assert len(errors) == 1
+        assert "floor: 15" in errors[0]
+
+    def test_pattern_counts_only_matching_entries(self, tmp_path):
+        loop = _make_loop(tmp_path)
+        progress = tmp_path / "ralph" / "progress.md"
+        progress.write_text(
+            "## Cycle 1\nfoo\nbar\n## Cycle 2\nbaz\n## Cycle 3\nqux\n"
+        )
+        step = self._step_with_guard(entry_pattern=r"^## Cycle ")
+        before = loop._snapshot_append_guards(step)
+        assert before == {"ralph/progress.md": 3}
+        # Lose two cycles (down to 1).
+        progress.write_text("## Cycle 3\nqux\n")
+        errors = loop._check_append_guards(step, before)
+        assert len(errors) == 1
+        assert "3 → 1" in errors[0]
+
+    def test_missing_file_treated_as_zero(self, tmp_path):
+        loop = _make_loop(tmp_path)
+        step = self._step_with_guard()
+        before = loop._snapshot_append_guards(step)
+        assert before == {"ralph/progress.md": 0}
+        # No file ever written; still zero, no shrink.
+        errors = loop._check_append_guards(step, before)
+        assert errors == []
+
+    def test_step_without_guards_is_noop(self, tmp_path):
+        from langywrap.ralph.config import StepConfig
+
+        loop = _make_loop(tmp_path)
+        step = StepConfig(
+            name="execute",
+            prompt_template=Path("ralph/prompts/execute.md"),
+        )
+        assert loop._snapshot_append_guards(step) == {}
+        assert loop._check_append_guards(step, {}) == []
