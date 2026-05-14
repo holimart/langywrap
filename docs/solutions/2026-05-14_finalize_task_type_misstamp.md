@@ -209,3 +209,34 @@ whitehacky uses a markdown table. None of these match
 inactive in those three repos. Porting them to the unified block
 format would re-activate the anti-collapse signal — a separate audit
 worth scheduling.
+
+## Format-mismatch follow-up — resolved 2026-05-14
+
+The three non-conforming repos were addressed with a mix of library
+extension and forward-only prompt fixes:
+
+**Library** (langywrap):
+- `parse_cycle_blocks` now also detects markdown-table cycle ledgers
+  (`| N | date | task_type | … |`). Header columns matched
+  case-insensitively; rows are emitted as `CycleBlock` entries with
+  `n` and `task_type` populated.
+- `dedupe_cycles` now down-ranks `task_type == "finalize"` so the
+  paired real-work row (tooling, scan, deepllm, …) wins when both rows
+  exist for the same cycle. The synthetic per-cycle finalize marker
+  would otherwise drown out the budget signal.
+- Three new tests in `tests/test_ralph/test_markdown_todo.py`:
+  table parsing, dedupe-prefers-non-finalize, ignores non-cycle tables.
+
+**Per-repo activation:**
+
+| repo            | approach                                          | commit  | engine sees                     |
+|-----------------|---------------------------------------------------|---------|----------------------------------|
+| whitehacky      | Library auto-activated (table-row parser)         | (auto)  | 348 cycles immediately           |
+| crunchdaoobesity| Forward-only prompt fix: orient emits `TASK_TYPE:` in plan.md, finalize copies into `## Cycle N` block | f20558d | ~12 cycles after deployment      |
+| BSDconj         | Forward-only prompt fix (709a4ba) + history restore from 18f4800 after cycle 189 wiped progress.md | a03d5e5 | History restored, TASK_TYPE fills in ~12 cycles |
+
+**Secondary finding** — BSDconj cycle 189 finalize truncated
+research/ralph/progress.md from 2854 lines to 14, deleting 188
+cycles of history. The pre-TASK_TYPE prompt said "Append" but the
+LLM rewrote from scratch. Restored from 18f4800; new prompt (709a4ba)
+landed two hours later and should prevent recurrence.

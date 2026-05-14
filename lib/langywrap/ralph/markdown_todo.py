@@ -44,6 +44,11 @@ CYCLE_TYPE_HINT_RE = re.compile(
     re.IGNORECASE,
 )
 TASK_TYPE_BODY_RE = re.compile(r"^\s*TASK_TYPE:\s*([a-z_]+)\s*$", re.MULTILINE)
+# Markdown-table form: `| N | date | task_type | task_id | status | one-line |`
+# Used by whitehacky (and any other repo whose finalize emits one row per cycle).
+# Header row must contain columns named "N" (or "cycle") and "task_type".
+TABLE_SEP_RE = re.compile(r"^\s*\|\s*:?-+:?\s*(\|\s*:?-+:?\s*)+\|?\s*$")
+TABLE_ROW_RE = re.compile(r"^\s*\|(.+)\|\s*$")
 
 
 @dataclass
@@ -105,10 +110,13 @@ class AutoPin:
     task_type: str
     label: str
     cycle: int
+    priority: str = "P2"
 
     def render(self) -> str:
+        slug = re.sub(r"[^a-z0-9-]+", "-", f"auto-pin-{self.policy.lower()}-cycle-{self.cycle}")
+        slug = re.sub(r"-+", "-", slug).strip("-") or "auto-pin"
         return (
-            f"- [ ] **{self.task_type}**: {self.label} "
+            f"- [ ] **[{self.priority}] task:{slug}** [{self.task_type}] {self.label} "
             f"(auto-pin cycle {self.cycle}, policy: {self.policy})"
         )
 
@@ -203,13 +211,20 @@ def parse_cycle_blocks(
     metric_keys: Iterable[str] = (),
     hash_keys: Iterable[str] = (),
 ) -> list[CycleBlock]:
-    """Parse `## Cycle N — …` blocks.
+    """Parse `## Cycle N — …` blocks and (optionally) markdown-table cycle rows.
 
     `metric_keys` lists keys whose body lines look like `key(N) = <float>`
     (e.g. `floor(100) = 0.005`). Matched values land in `block.metrics[key]`.
 
     `hash_keys` lists keys whose body lines look like `key: <hexsha>` (e.g.
     `mem_hash: deadbeef...`). Matched values land in `block.hashes[key]`.
+
+    Also detects markdown-table cycle ledgers of the form
+    ``| N | date | task_type | … |`` (header must include columns named
+    ``N`` or ``cycle`` plus ``task_type``). Each table row becomes a
+    CycleBlock with ``n`` and ``task_type`` populated. Used by whitehacky
+    and other repos whose finalize emits per-cycle table rows rather than
+    heading blocks.
 
     Duplicate cycle numbers are returned as separate blocks; callers can
     dedupe by `n` if they want a single observation per cycle.
@@ -259,14 +274,82 @@ def parse_cycle_blocks(
                 hashes=hashes,
             )
         )
+    blocks.extend(_parse_cycle_table_rows(lines))
     return blocks
+
+
+def _split_table_row(line: str) -> list[str]:
+    m = TABLE_ROW_RE.match(line)
+    if not m:
+        return []
+    inner = m.group(1)
+    return [c.strip() for c in inner.split("|")]
+
+
+def _parse_cycle_table_rows(lines: list[str]) -> list[CycleBlock]:
+    """Detect `| N | date | task_type | … |` ledger rows and emit CycleBlocks.
+
+    Multiple tables in the same document are supported. Header column
+    names are matched case-insensitively. Rows whose `N` cell is not a
+    pure integer are skipped (handles spillover prose around the table).
+    """
+    out: list[CycleBlock] = []
+    i = 0
+    while i < len(lines):
+        cols = _split_table_row(lines[i])
+        if not cols:
+            i += 1
+            continue
+        names = [c.lower() for c in cols]
+        cycle_col = None
+        for cand in ("n", "cycle", "cycle_n"):
+            if cand in names:
+                cycle_col = names.index(cand)
+                break
+        if cycle_col is None or "task_type" not in names:
+            i += 1
+            continue
+        type_col = names.index("task_type")
+        # Optional separator row follows.
+        j = i + 1
+        if j < len(lines) and TABLE_SEP_RE.match(lines[j]):
+            j += 1
+        # Parse contiguous rows until non-row line.
+        while j < len(lines):
+            row_cols = _split_table_row(lines[j])
+            if not row_cols:
+                break
+            if (
+                cycle_col >= len(row_cols)
+                or type_col >= len(row_cols)
+                or not row_cols[cycle_col].isdigit()
+            ):
+                j += 1
+                continue
+            n = int(row_cols[cycle_col])
+            tt = row_cols[type_col].lower() or None
+            if tt and not re.fullmatch(r"[a-z_][a-z0-9_]*", tt):
+                tt = None
+            out.append(
+                CycleBlock(
+                    n=n,
+                    task_type=tt,
+                    body=lines[j],
+                )
+            )
+            j += 1
+        i = j
+    return out
 
 
 def dedupe_cycles(cycles: list[CycleBlock]) -> list[CycleBlock]:
     """Return one block per cycle number, preferring the richest observation.
 
     Richness order: non-None `task_type` beats None; any populated
-    `metrics`/`hashes` beats empty.
+    `metrics`/`hashes` beats empty. When both candidates have a
+    `task_type`, a non-``finalize`` value beats ``finalize`` because the
+    synthetic finalize marker emitted every cycle would otherwise
+    drown out the real work type in budget rollups.
     """
     seen: dict[int, CycleBlock] = {}
     for c in cycles:
@@ -275,6 +358,13 @@ def dedupe_cycles(cycles: list[CycleBlock]) -> list[CycleBlock]:
             seen[c.n] = c
             continue
         if existing.task_type is None and c.task_type is not None:
+            seen[c.n] = c
+            continue
+        if (
+            existing.task_type == "finalize"
+            and c.task_type is not None
+            and c.task_type != "finalize"
+        ):
             seen[c.n] = c
             continue
         if not existing.metrics and c.metrics:
