@@ -139,29 +139,21 @@ def migrate(
                 unmapped.add(code)
                 out.append(line)
                 continue
-            out.append(
-                f"- [ ] **[P{priority}] task:{slug}** [{type_name}] {title}"
-            )
+            out.append(f"- [ ] **[P{priority}] task:{slug}** [{type_name}] {title}")
             bracketed += 1
             continue
 
         m = _HEADING_CHECKBOX_RE.match(line)
         if m:
             status, priority, slug, type_name, title = m.groups()
-            out.append(
-                f"- [{status}] **[P{priority}] task:{slug}** [{type_name}] {title}"
-            )
+            out.append(f"- [{status}] **[P{priority}] task:{slug}** [{type_name}] {title}")
             heading_cb += 1
             continue
 
         # Anything that LOOKS like a tasks.md task heading but doesn't match
         # — surface a soft warning so the user can audit by hand.
-        if line.startswith("### ") and (
-            "task:" in line or re.search(r"\[P\d", line)
-        ):
-            warnings.append(
-                f"line not migrated (unrecognised shape): {line.strip()[:120]}"
-            )
+        if line.startswith("### ") and ("task:" in line or re.search(r"\[P\d", line)):
+            warnings.append(f"line not migrated (unrecognised shape): {line.strip()[:120]}")
         out.append(line)
 
     new_text = "\n".join(out)

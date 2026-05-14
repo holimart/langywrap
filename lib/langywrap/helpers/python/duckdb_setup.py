@@ -21,7 +21,7 @@ def setup_duckdb(db_path: Path, with_vss: bool = True) -> bool:
         return True
     except ImportError:
         # Fall back to CLI
-        cmd = f"duckdb {db_path} -c \"INSTALL vss; LOAD vss;\""
+        cmd = f'duckdb {db_path} -c "INSTALL vss; LOAD vss;"'
         result = subprocess.run(cmd, shell=True, capture_output=True)
         return result.returncode == 0
     except Exception:

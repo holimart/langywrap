@@ -22,6 +22,7 @@ from pydantic import BaseModel, ConfigDict, Field
 # Models
 # ---------------------------------------------------------------------------
 
+
 class PermissionRule(BaseModel):
     """A single permission rule loaded from permissions.yaml."""
 
@@ -54,6 +55,7 @@ class PermissionsConfig(BaseModel):
 # ---------------------------------------------------------------------------
 # Pattern matching
 # ---------------------------------------------------------------------------
+
 
 def _parse_command(command: str) -> tuple[str, str]:
     """Return (program, args_string) from a shell command string."""
@@ -140,34 +142,40 @@ def _load_yaml(path: Path) -> PermissionsConfig:
     dtp = raw.get("data_theft_prevention")
     if dtp and dtp.get("enabled", False):
         for sf in dtp.get("sensitive_files") or []:
-            deny_rules.append(PermissionRule(
-                pattern=(
-                    f"regex:(?:cat|head|tail|less|more|cp|scp|rsync)\\s+.*"
-                    f"{re.escape(sf['pattern'].replace('**/', ''))}"
-                ),
-                reason=sf.get("reason", "Sensitive file access"),
-                message=sf.get("message", ""),
-                suggestion=sf.get("suggestion", ""),
-            ))
+            deny_rules.append(
+                PermissionRule(
+                    pattern=(
+                        f"regex:(?:cat|head|tail|less|more|cp|scp|rsync)\\s+.*"
+                        f"{re.escape(sf['pattern'].replace('**/', ''))}"
+                    ),
+                    reason=sf.get("reason", "Sensitive file access"),
+                    message=sf.get("message", ""),
+                    suggestion=sf.get("suggestion", ""),
+                )
+            )
         for bd in dtp.get("blocked_destinations") or []:
-            deny_rules.append(PermissionRule(
-                pattern=f"regex:(?:curl|wget|http|nc)\\s+.*{re.escape(bd['domain'])}",
-                reason=bd.get("reason", "Blocked destination"),
-                message=bd.get("message", ""),
-                suggestion=bd.get("suggestion", ""),
-            ))
+            deny_rules.append(
+                PermissionRule(
+                    pattern=f"regex:(?:curl|wget|http|nc)\\s+.*{re.escape(bd['domain'])}",
+                    reason=bd.get("reason", "Blocked destination"),
+                    message=bd.get("message", ""),
+                    suggestion=bd.get("suggestion", ""),
+                )
+            )
         for bp in dtp.get("blocked_patterns") or []:
             # Convert "base64:*.env" → regex matching "base64 ... .env"
             parts = bp["pattern"].split(":", 1)
             if len(parts) == 2:
                 cmd_part, file_part = parts
                 file_glob = file_part.replace("*", ".*")
-                deny_rules.append(PermissionRule(
-                    pattern=f"regex:{re.escape(cmd_part)}\\s+.*{file_glob}",
-                    reason=bp.get("reason", "Blocked pattern"),
-                    message=bp.get("message", ""),
-                    suggestion=bp.get("suggestion", ""),
-                ))
+                deny_rules.append(
+                    PermissionRule(
+                        pattern=f"regex:{re.escape(cmd_part)}\\s+.*{file_glob}",
+                        reason=bp.get("reason", "Blocked pattern"),
+                        message=bp.get("message", ""),
+                        suggestion=bp.get("suggestion", ""),
+                    )
+                )
 
     cfg = PermissionsConfig(
         version=str(raw.get("version", "1.0")),
@@ -214,6 +222,7 @@ def load_permissions(project_dir: Path) -> PermissionsConfig:
 # ---------------------------------------------------------------------------
 # Config merging — the critical fix over the original interceptor
 # ---------------------------------------------------------------------------
+
 
 def merge_permissions(*configs: PermissionsConfig) -> PermissionsConfig:
     """

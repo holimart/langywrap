@@ -323,9 +323,7 @@ def check_graphify_health(
     # ``graphify .`` (full build) triggers LLM extraction on docs/images/PDFs.
     # ``graphify update`` is code-only (tree-sitter, no LLM).
     uses_full_build = (
-        "graphify" in cmd_blob
-        and "graphify ." in cmd_blob
-        and " update" not in cmd_blob
+        "graphify" in cmd_blob and "graphify ." in cmd_blob and " update" not in cmd_blob
     )
     has_textify_extract = "textify" in cmd_blob
 

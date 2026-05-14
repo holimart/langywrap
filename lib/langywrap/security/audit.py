@@ -60,8 +60,8 @@ class AuditLogger:
     def log_event(
         self,
         command: str,
-        decision: Any,            # PermissionDecision enum or str
-        rule: Any = None,         # Optional[PermissionRule]
+        decision: Any,  # PermissionDecision enum or str
+        rule: Any = None,  # Optional[PermissionRule]
         project: str | None = None,
         extra: dict[str, Any] | None = None,
     ) -> None:
@@ -83,9 +83,9 @@ class AuditLogger:
         """
         entry: dict[str, Any] = {
             "timestamp": datetime.now(tz=UTC).isoformat(),
-            "project":   project or self.project,
-            "command":   command,
-            "decision":  _decision_str(decision),
+            "project": project or self.project,
+            "command": command,
+            "decision": _decision_str(decision),
         }
 
         if rule is not None:
@@ -134,6 +134,7 @@ class AuditLogger:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _decision_str(decision: Any) -> str:
     """Normalise PermissionDecision enum or plain string to uppercase string."""

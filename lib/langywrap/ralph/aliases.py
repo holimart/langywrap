@@ -14,13 +14,13 @@
 
 BUILTIN_ALIASES: dict[str, str] = {
     # Anthropic
-    "haiku":  "claude-haiku-4-5-20251001",
+    "haiku": "claude-haiku-4-5-20251001",
     "sonnet": "claude-sonnet-4-6",
-    "opus":   "claude-opus-4-6",
+    "opus": "claude-opus-4-6",
     # Kimi (via NVIDIA NIM)
-    "kimi":   "nvidia/moonshotai/kimi-k2.6",
+    "kimi": "nvidia/moonshotai/kimi-k2.6",
     # Gemma 4 variants
-    "gemma4":            "openrouter/google/gemma-4-31b-it",
-    "gemma4-nvidia":     "nvidia/google/gemma-4-31b-it",
+    "gemma4": "openrouter/google/gemma-4-31b-it",
+    "gemma4-nvidia": "nvidia/google/gemma-4-31b-it",
     "gemma4-openrouter": "openrouter/google/gemma-4-31b-it:free",
 }

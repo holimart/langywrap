@@ -159,12 +159,7 @@ class PipelineVariant(BaseModel):
 
         failure_penalty = failures / max(cycles, 1) * 0.4
 
-        self.fitness_score = (
-            quality * 0.5
-            - cost_usd * 0.3
-            - avg_seconds * 0.0002
-            - failure_penalty
-        )
+        self.fitness_score = quality * 0.5 - cost_usd * 0.3 - avg_seconds * 0.0002 - failure_penalty
         self.metrics_history.append(metrics)
 
     model_config = ConfigDict(extra="allow")
@@ -232,7 +227,9 @@ class StepEvolver:
         self._save_variant(child)
         logger.info(
             "Mutated %s → %s via %s",
-            parent.variant_id, child.variant_id, description,
+            parent.variant_id,
+            child.variant_id,
+            description,
         )
         return child
 
@@ -262,7 +259,8 @@ class StepEvolver:
                 self._save_variant(variant)
                 logger.info(
                     "Recorded result for %s: fitness=%.4f",
-                    variant_id, variant.fitness_score,
+                    variant_id,
+                    variant.fitness_score,
                 )
                 return
         logger.warning("record_result: variant_id %r not found", variant_id)
@@ -438,6 +436,4 @@ class StepEvolver:
                 self._population.append(variant)
             except Exception as exc:
                 logger.warning("Skipping corrupt archive file %s: %s", path.name, exc)
-        logger.info(
-            "Loaded %d variants from archive %s", len(self._population), self._archive_dir
-        )
+        logger.info("Loaded %d variants from archive %s", len(self._population), self._archive_dir)

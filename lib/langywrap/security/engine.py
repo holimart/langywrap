@@ -33,15 +33,17 @@ from .permissions import (
 # Decision enum
 # ---------------------------------------------------------------------------
 
+
 class PermissionDecision(Enum):
     ALLOW = "allow"
-    DENY  = "deny"
-    ASK   = "ask"
+    DENY = "deny"
+    ASK = "ask"
 
 
 # ---------------------------------------------------------------------------
 # Result dataclass
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class SecurityResult:
@@ -62,6 +64,7 @@ class SecurityResult:
 # ---------------------------------------------------------------------------
 # Engine
 # ---------------------------------------------------------------------------
+
 
 class SecurityEngine:
     """
@@ -89,7 +92,7 @@ class SecurityEngine:
         enable_audit: bool = True,
     ) -> None:
         self.project_dir = Path(project_dir).resolve()
-        self.system_dir  = Path(system_dir).resolve() if system_dir else Path.home() / ".langywrap"
+        self.system_dir = Path(system_dir).resolve() if system_dir else Path.home() / ".langywrap"
         self.project_name = project_name or self.project_dir.name
 
         self._config = self._build_config()
@@ -137,9 +140,7 @@ class SecurityEngine:
     # Core check logic
     # ------------------------------------------------------------------
 
-    def _find_rule(
-        self, command: str, rules: list[PermissionRule]
-    ) -> PermissionRule | None:
+    def _find_rule(self, command: str, rules: list[PermissionRule]) -> PermissionRule | None:
         for rule in rules:
             if match_pattern(command, rule.pattern):
                 return rule
@@ -159,19 +160,17 @@ class SecurityEngine:
         deny_rule = self._find_rule(command, self._config.deny)
         if deny_rule:
             result = SecurityResult(
-                decision   = PermissionDecision.DENY,
-                rule       = deny_rule,
-                message    = (
-                    deny_rule.message or f"Command blocked: {deny_rule.reason or 'policy'}"
-                ),
-                suggestion = deny_rule.suggestion or "",
+                decision=PermissionDecision.DENY,
+                rule=deny_rule,
+                message=(deny_rule.message or f"Command blocked: {deny_rule.reason or 'policy'}"),
+                suggestion=deny_rule.suggestion or "",
             )
             if self._audit:
                 self._audit.log_event(
-                    command  = command,
-                    decision = PermissionDecision.DENY,
-                    rule     = deny_rule,
-                    project  = self.project_name,
+                    command=command,
+                    decision=PermissionDecision.DENY,
+                    rule=deny_rule,
+                    project=self.project_name,
                 )
             return result
 
@@ -179,26 +178,26 @@ class SecurityEngine:
         ask_rule = self._find_rule(command, self._config.ask)
         if ask_rule:
             result = SecurityResult(
-                decision   = PermissionDecision.ASK,
-                rule       = ask_rule,
-                message    = ask_rule.message or f"Confirmation required: {ask_rule.reason or ''}",
-                suggestion = ask_rule.suggestion or "",
+                decision=PermissionDecision.ASK,
+                rule=ask_rule,
+                message=ask_rule.message or f"Confirmation required: {ask_rule.reason or ''}",
+                suggestion=ask_rule.suggestion or "",
             )
             if self._audit:
                 self._audit.log_event(
-                    command  = command,
-                    decision = PermissionDecision.ASK,
-                    rule     = ask_rule,
-                    project  = self.project_name,
+                    command=command,
+                    decision=PermissionDecision.ASK,
+                    rule=ask_rule,
+                    project=self.project_name,
                 )
             return result
 
         # 3. ALLOW — explicit or implicit (default-allow)
         allow_rule = self._find_rule(command, self._config.allow)
         result = SecurityResult(
-            decision = PermissionDecision.ALLOW,
-            rule     = allow_rule,
-            message  = (
+            decision=PermissionDecision.ALLOW,
+            rule=allow_rule,
+            message=(
                 (allow_rule.reason or "Allowed by rule")
                 if allow_rule
                 else "No matching deny/ask rule — allowed by default"
@@ -206,10 +205,10 @@ class SecurityEngine:
         )
         if self._audit:
             self._audit.log_event(
-                command  = command,
-                decision = PermissionDecision.ALLOW,
-                rule     = allow_rule,
-                project  = self.project_name,
+                command=command,
+                decision=PermissionDecision.ALLOW,
+                rule=allow_rule,
+                project=self.project_name,
             )
         return result
 
@@ -264,11 +263,11 @@ class SecurityEngine:
             if not approved:
                 if self._audit:
                     self._audit.log_event(
-                        command  = command,
-                        decision = PermissionDecision.DENY,
-                        rule     = result.rule,
-                        project  = self.project_name,
-                        extra    = {"reason": "user_declined_ask"},
+                        command=command,
+                        decision=PermissionDecision.DENY,
+                        rule=result.rule,
+                        project=self.project_name,
+                        extra={"reason": "user_declined_ask"},
                     )
                 raise PermissionError(
                     f"[langywrap] Execution cancelled (ASK not confirmed): {command!r}"
@@ -276,11 +275,11 @@ class SecurityEngine:
             # Log the user-approved execution
             if self._audit:
                 self._audit.log_event(
-                    command  = command,
-                    decision = PermissionDecision.ALLOW,
-                    rule     = result.rule,
-                    project  = self.project_name,
-                    extra    = {"reason": "user_approved_ask"},
+                    command=command,
+                    decision=PermissionDecision.ALLOW,
+                    rule=result.rule,
+                    project=self.project_name,
+                    extra={"reason": "user_approved_ask"},
                 )
 
         # Execute

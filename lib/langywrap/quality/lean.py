@@ -57,17 +57,19 @@ def count_sorries(project_dir: Path, src_dir: str = ".") -> list[SorryInfo]:
     for lean_file in src_path.rglob("*.lean"):
         content = lean_file.read_text()
         # Strip block comments /- ... -/
-        stripped = re.sub(r'/\-.*?\-/', '', content, flags=re.DOTALL)
+        stripped = re.sub(r"/\-.*?\-/", "", content, flags=re.DOTALL)
         # Strip line comments -- ...
-        stripped = re.sub(r'--.*$', '', stripped, flags=re.MULTILINE)
+        stripped = re.sub(r"--.*$", "", stripped, flags=re.MULTILINE)
 
         for i, line in enumerate(stripped.splitlines(), 1):
-            if re.search(r'\bsorry\b', line):
-                sorries.append(SorryInfo(
-                    file=str(lean_file.relative_to(project_dir)),
-                    line=i,
-                    context=line.strip()[:100],
-                ))
+            if re.search(r"\bsorry\b", line):
+                sorries.append(
+                    SorryInfo(
+                        file=str(lean_file.relative_to(project_dir)),
+                        line=i,
+                        context=line.strip()[:100],
+                    )
+                )
 
     return sorries
 

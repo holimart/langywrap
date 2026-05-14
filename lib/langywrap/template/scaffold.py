@@ -132,7 +132,7 @@ def _create_directories(target: Path, name: str) -> None:
     pkg_dir = target / "src" / name.replace("-", "_")
     init_file = pkg_dir / "__init__.py"
     if not init_file.exists():
-        init_file.write_text(f'"""{ name } package."""\n')
+        init_file.write_text(f'"""{name} package."""\n')
 
     # Create .env placeholder
     env_file = target / ".env"

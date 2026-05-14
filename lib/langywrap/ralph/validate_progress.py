@@ -120,8 +120,7 @@ def validate(orient_path: Path, progress_path: Path) -> tuple[bool, str]:
         )
 
     return True, (
-        f"validate_progress: ok — cycle {latest_n} TASK_TYPE=`{expected}` "
-        "matches orient.md."
+        f"validate_progress: ok — cycle {latest_n} TASK_TYPE=`{expected}` matches orient.md."
     )
 
 

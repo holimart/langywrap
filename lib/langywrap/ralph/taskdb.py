@@ -148,7 +148,9 @@ class TaskDB:
                 end += 1
 
             block = lines[i:end]
-            record = self._task_from_block(block, line_no=i + 1, checked=checkbox.group(1) if checkbox else "")
+            record = self._task_from_block(
+                block, line_no=i + 1, checked=checkbox.group(1) if checkbox else ""
+            )
             if record:
                 records.append(record)
             i = end + 1 if end < len(lines) and re.match(r"^\s*---\s*$", lines[end]) else end
@@ -189,14 +191,22 @@ class TaskDB:
     def _progress_score(entry: ProgressEntry) -> int:
         return sum(
             bool(value)
-            for value in (entry.outcome, entry.rigor, entry.lean_status, entry.key_insight, entry.next_step)
+            for value in (
+                entry.outcome,
+                entry.rigor,
+                entry.lean_status,
+                entry.key_insight,
+                entry.next_step,
+            )
         )
 
     def render_orient(self, *, confirmation_token: str = "") -> str:
         """Render native ORIENT output as Markdown."""
         return render_orient_snapshot(self.snapshot(), confirmation_token=confirmation_token)
 
-    def _task_from_block(self, block: list[str], *, line_no: int, checked: str = "") -> TaskRecord | None:
+    def _task_from_block(
+        self, block: list[str], *, line_no: int, checked: str = ""
+    ) -> TaskRecord | None:
         raw = block[0]
         task_match = re.search(r"(task:[A-Za-z0-9._-]+)", raw)
         if not task_match:
@@ -264,7 +274,21 @@ class TaskDB:
             lowered = clean.lower()
             if not clean:
                 continue
-            if any(word in lowered for word in ("depends on", "requires", "blocked", "prerequisite", "before", "after")) or "->" in clean and re.search(r"\bH_[A-Za-z0-9_-]+", clean):
+            if (
+                any(
+                    word in lowered
+                    for word in (
+                        "depends on",
+                        "requires",
+                        "blocked",
+                        "prerequisite",
+                        "before",
+                        "after",
+                    )
+                )
+                or "->" in clean
+                and re.search(r"\bH_[A-Za-z0-9_-]+", clean)
+            ):
                 hints.append(clean[:220])
             if len(hints) >= 4:
                 break
@@ -299,7 +323,15 @@ class TaskDB:
                 flags.append(f"{name}: absent")
                 continue
             text = path.read_text(encoding="utf-8", errors="replace")
-            matches = sorted(set(re.findall(r"\b(VALIDATED|CONCERNS|LIKELY INVALID|ALREADY KNOWN|SOUND|FLAWED|FATAL|BROKEN)\b", text, re.IGNORECASE)))
+            matches = sorted(
+                set(
+                    re.findall(
+                        r"\b(VALIDATED|CONCERNS|LIKELY INVALID|ALREADY KNOWN|SOUND|FLAWED|FATAL|BROKEN)\b",
+                        text,
+                        re.IGNORECASE,
+                    )
+                )
+            )
             flags.append(f"{name}: {', '.join(matches) if matches else 'present/no verdict found'}")
         return flags
 
@@ -334,7 +366,10 @@ class TaskDB:
             return ""
         last4 = recent[:4]
         lean_words = re.compile(r"sorry|skeleton|critic review|axiom|port|formaliz", re.IGNORECASE)
-        if all(lean_words.search(entry.lean_status + " " + entry.title + " " + entry.next_step) for entry in last4):
+        if all(
+            lean_words.search(entry.lean_status + " " + entry.title + " " + entry.next_step)
+            for entry in last4
+        ):
             return "STAGNATION DETECTED: Last 4+ cycles look Lean-heavy. MANDATORY RESEARCH CYCLE."
         return ""
 
@@ -376,21 +411,29 @@ def render_orient_snapshot(snapshot: RalphSnapshot, *, confirmation_token: str =
     else:
         lines.append("- Largest sorry files: none found")
     if lean.axiom_files:
-        lines.append("- Axiom-bearing files detected: " + ", ".join(f"`{p}`" for p in lean.axiom_files[:5]))
+        lines.append(
+            "- Axiom-bearing files detected: " + ", ".join(f"`{p}`" for p in lean.axiom_files[:5])
+        )
     else:
         lines.append("- Axiom-bearing files detected: none found")
-    lines.append("- Build status: not run by native orient; use configured gates/checks for compilation evidence.")
+    lines.append(
+        "- Build status: not run by native orient; use configured gates/checks for compilation evidence."
+    )
 
     lines += ["", "## Most Promising Actionable Tasks"]
     if snapshot.tasks:
         for task in snapshot.tasks[:5]:
             lines.append(f"- `{task.task_id}` ({task.priority}, {task.status}) - {task.title}")
             if task.depends_on:
-                lines.append("  Depends on: " + ", ".join(f"`{dep}`" for dep in task.depends_on[:4]))
+                lines.append(
+                    "  Depends on: " + ", ".join(f"`{dep}`" for dep in task.depends_on[:4])
+                )
             if task.dependency_hints:
                 lines.append(f"  Dependency hint: {task.dependency_hints[0]}")
             elif task.task_refs:
-                lines.append("  Related tasks: " + ", ".join(f"`{ref}`" for ref in task.task_refs[:4]))
+                lines.append(
+                    "  Related tasks: " + ", ".join(f"`{ref}`" for ref in task.task_refs[:4])
+                )
     else:
         lines.append("- No actionable open tasks parsed from tasks.md.")
 
@@ -399,7 +442,9 @@ def render_orient_snapshot(snapshot: RalphSnapshot, *, confirmation_token: str =
         for task in snapshot.blocked_tasks[:5]:
             reason = "explicit blocked status"
             if task.depends_on:
-                reason = "open prerequisite(s): " + ", ".join(f"`{dep}`" for dep in task.depends_on[:4])
+                reason = "open prerequisite(s): " + ", ".join(
+                    f"`{dep}`" for dep in task.depends_on[:4]
+                )
             lines.append(f"- `{task.task_id}` ({task.priority}) - {reason}")
 
     lines += ["", "## Verdict Flags"]
@@ -409,7 +454,9 @@ def render_orient_snapshot(snapshot: RalphSnapshot, *, confirmation_token: str =
     if last and last.next_step:
         lines.append(last.next_step)
     elif snapshot.tasks:
-        lines.append(f"Start from `{snapshot.tasks[0].task_id}` unless PLAN has a stronger reason to branch.")
+        lines.append(
+            f"Start from `{snapshot.tasks[0].task_id}` unless PLAN has a stronger reason to branch."
+        )
     else:
         lines.append("No recommendation available from deterministic state.")
 
@@ -430,17 +477,25 @@ def _planning_brief(snapshot: RalphSnapshot) -> list[str]:
 
     if actionable:
         task = actionable[0]
-        lines.append(f"- Highest actionable task: `{task.task_id}` ({task.priority}) - {task.title}")
+        lines.append(
+            f"- Highest actionable task: `{task.task_id}` ({task.priority}) - {task.title}"
+        )
     elif blocked:
         task = blocked[0]
-        lines.append(f"- Highest-priority open task appears blocked/dependent: `{task.task_id}` ({task.priority}) - {task.title}")
+        lines.append(
+            f"- Highest-priority open task appears blocked/dependent: `{task.task_id}` ({task.priority}) - {task.title}"
+        )
     else:
         lines.append("- No open parsed tasks; inspect tasks.md manually.")
 
     if blocked:
-        lines.append("- Blocked high-priority tasks exist; PLAN should avoid repeating blocked routes unless new evidence is available.")
+        lines.append(
+            "- Blocked high-priority tasks exist; PLAN should avoid repeating blocked routes unless new evidence is available."
+        )
     if last and "RESEARCH CYCLE RECOMMENDED" in last.next_step:
-        lines.append("- Latest finalize guidance recommends a research cycle; weigh this against any P0 governance guards.")
+        lines.append(
+            "- Latest finalize guidance recommends a research cycle; weigh this against any P0 governance guards."
+        )
     if last and last.next_step:
         lines.append(f"- Latest next-step instruction: {last.next_step[:260]}")
     return lines

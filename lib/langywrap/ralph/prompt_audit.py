@@ -116,9 +116,7 @@ def _read_prompt(step: StepConfig) -> str:
 # Rules ----------------------------------------------------------------------
 
 
-def _rule_write_plan_target(
-    step: StepConfig, prompt: str, _cfg: RalphConfig
-) -> list[Finding]:
+def _rule_write_plan_target(step: StepConfig, prompt: str, _cfg: RalphConfig) -> list[Finding]:
     """`output_as="plan"` + `validates_plan` ⇒ prompt must instruct an explicit
     Write of ``ralph/plan.md``.
 
@@ -172,9 +170,7 @@ def _rule_confirmation_token_in_prompt(
     ]
 
 
-def _rule_cycle_num_requirement(
-    step: StepConfig, prompt: str, cfg: RalphConfig
-) -> list[Finding]:
+def _rule_cycle_num_requirement(step: StepConfig, prompt: str, cfg: RalphConfig) -> list[Finding]:
     """If RalphConfig.plan_require_current_cycle, the validating prompt must
     tell the agent to mention the current cycle number."""
     if not cfg.plan_require_current_cycle or not step.validates_plan or step.builtin:
@@ -398,9 +394,7 @@ def _rule_orphan_plan_validator_config(cfg: RalphConfig) -> list[Finding]:
     only fire when at least one step has ``validates_plan=True``. If any of those
     fields are set but no step opts in, the validator never runs — silent
     misconfiguration (sportsmarket-style)."""
-    has_validator_step = any(
-        step.validates_plan and not step.builtin for step in cfg.steps
-    )
+    has_validator_step = any(step.validates_plan and not step.builtin for step in cfg.steps)
     if has_validator_step:
         return []
     configured: list[str] = []
@@ -484,13 +478,10 @@ def format_findings(findings: list[Finding]) -> str:
     warns = [f for f in findings if f.severity == "warn"]
     lines = [f"  [prompt audit] {len(errors)} error(s), {len(warns)} warning(s):"]
     for f in errors + warns:
-        lines.append(
-            f"    [{f.severity.upper()}] {f.step} — {f.rule}\n      {f.detail}"
-        )
+        lines.append(f"    [{f.severity.upper()}] {f.step} — {f.rule}\n      {f.detail}")
     lines.append("")
     lines.append(
-        "  For a deeper semantic audit (input chains, tool grants, model "
-        "suitability) run one of:"
+        "  For a deeper semantic audit (input chains, tool grants, model suitability) run one of:"
     )
     lines.append("    claude /ralph-prompt-audit")
     lines.append('    opencode run "/ralph-prompt-audit"')

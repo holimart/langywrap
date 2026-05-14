@@ -157,28 +157,30 @@ def _parse_flow_entry(
             template_path = candidate
             break
 
-    return [StepConfig(
-        name=name,
-        prompt_template=template_path,
-        timeout_minutes=timeout,
-        confirmation_token=opts.get("token", ""),
-        depends_on=opts.get("depends_on", []),
-        model=model_id,
-        tools=tools,
-        engine=engine,
-        builtin=opts.get("builtin", ""),
-        run_if_step=run_if_step,
-        run_if_pattern=run_if_pattern,
-        run_if_cycle_types=run_if_cycle_types,
-        output_as=output_as,
-        prompt_extra=prompt_extra,
-        fail_fast=opts.get("fail_fast", False),
-        pipeline=opts.get("pipeline", True),
-        every_n=opts.get("every", 0),
-        validates_plan=bool(opts.get("validates_plan", False)),
-        primary=bool(opts.get("primary", False)),
-        includes_orient_context=bool(opts.get("includes_orient_context", False)),
-    )]
+    return [
+        StepConfig(
+            name=name,
+            prompt_template=template_path,
+            timeout_minutes=timeout,
+            confirmation_token=opts.get("token", ""),
+            depends_on=opts.get("depends_on", []),
+            model=model_id,
+            tools=tools,
+            engine=engine,
+            builtin=opts.get("builtin", ""),
+            run_if_step=run_if_step,
+            run_if_pattern=run_if_pattern,
+            run_if_cycle_types=run_if_cycle_types,
+            output_as=output_as,
+            prompt_extra=prompt_extra,
+            fail_fast=opts.get("fail_fast", False),
+            pipeline=opts.get("pipeline", True),
+            every_n=opts.get("every", 0),
+            validates_plan=bool(opts.get("validates_plan", False)),
+            primary=bool(opts.get("primary", False)),
+            includes_orient_context=bool(opts.get("includes_orient_context", False)),
+        )
+    ]
 
 
 def _parse_retry(
@@ -211,6 +213,7 @@ def _parse_retry(
 # Gate parsing
 # ---------------------------------------------------------------------------
 
+
 def _parse_gates(raw: Any) -> tuple[QualityGateConfig | None, list[QualityGateConfig]]:
     """Parse gates section into primary + additional quality gates.
 
@@ -235,11 +238,13 @@ def _parse_gates(raw: Any) -> tuple[QualityGateConfig | None, list[QualityGateCo
                     timeout = item.get("timeout", item.get("timeout_minutes", 10))
                     if isinstance(timeout, str) and timeout.endswith("m"):
                         timeout = int(timeout[:-1])
-                    gates.append(QualityGateConfig(
-                        command=item["command"],
-                        timeout_minutes=int(timeout or 10),
-                        required=item.get("required", True),
-                    ))
+                    gates.append(
+                        QualityGateConfig(
+                            command=item["command"],
+                            timeout_minutes=int(timeout or 10),
+                            required=item.get("required", True),
+                        )
+                    )
                 else:
                     # Single-key dict: "lake build": {timeout: 15m}
                     cmd = next(iter(item))
@@ -247,11 +252,13 @@ def _parse_gates(raw: Any) -> tuple[QualityGateConfig | None, list[QualityGateCo
                     timeout = opts.get("timeout", opts.get("timeout_minutes", 10))
                     if isinstance(timeout, str) and timeout.endswith("m"):
                         timeout = int(timeout[:-1])
-                    gates.append(QualityGateConfig(
-                        command=cmd,
-                        timeout_minutes=int(timeout),
-                        required=opts.get("required", True),
-                    ))
+                    gates.append(
+                        QualityGateConfig(
+                            command=cmd,
+                            timeout_minutes=int(timeout),
+                            required=opts.get("required", True),
+                        )
+                    )
 
         primary = gates[0] if gates else None
         additional = gates[1:] if len(gates) > 1 else []
@@ -263,6 +270,7 @@ def _parse_gates(raw: Any) -> tuple[QualityGateConfig | None, list[QualityGateCo
 # ---------------------------------------------------------------------------
 # Adversarial parsing
 # ---------------------------------------------------------------------------
+
 
 def _parse_adversarial(raw: dict[str, Any] | None) -> tuple[int | None, str, list[str], bool]:
     """Parse adversarial section.
@@ -295,6 +303,7 @@ def _parse_adversarial(raw: dict[str, Any] | None) -> tuple[int | None, str, lis
 # ---------------------------------------------------------------------------
 # Main loader
 # ---------------------------------------------------------------------------
+
 
 def is_v2_config(raw: dict) -> bool:
     """Return True if this YAML dict uses v2 format (has 'flow' key)."""
@@ -338,7 +347,10 @@ def load_v2(raw: dict, project_dir: Path) -> RalphConfig:
             if key.endswith(".retry"):
                 step_name = key[: -len(".retry")]  # "execute.lean.retry" → "execute.lean"
                 retry_configs[step_name] = _parse_retry(
-                    entry[key], step_name, models, prompts_dir,
+                    entry[key],
+                    step_name,
+                    models,
+                    prompts_dir,
                 )
                 continue
 
@@ -367,13 +379,15 @@ def load_v2(raw: dict, project_dir: Path) -> RalphConfig:
                 template = candidate
                 break
         if template.exists():
-            steps.append(StepConfig(
-                name=name,
-                prompt_template=template,
-                timeout_minutes=45,
-                model=model_id,
-                pipeline=False,
-            ))
+            steps.append(
+                StepConfig(
+                    name=name,
+                    prompt_template=template,
+                    timeout_minutes=45,
+                    model=model_id,
+                    pipeline=False,
+                )
+            )
 
     # -- Gates ---------------------------------------------------------------
     primary_gate, extra_gates = _parse_gates(raw.get("gates", raw.get("gate")))
@@ -417,6 +431,7 @@ def load_v2(raw: dict, project_dir: Path) -> RalphConfig:
             # execute_model is deprecated — use conditional steps instead
             if "execute_model" in ct_cfg:
                 import warnings
+
                 warnings.warn(
                     f"cycle_types.{name}.execute_model is deprecated. "
                     f"Define a conditional step with when: [{name}] instead.",
@@ -427,7 +442,7 @@ def load_v2(raw: dict, project_dir: Path) -> RalphConfig:
 
     # -- Periodic tasks (lookback, etc.) -------------------------------------
     periodic_tasks: list[dict[str, Any]] = []
-    for pt in (raw.get("periodic") or []):
+    for pt in raw.get("periodic") or []:
         if isinstance(pt, dict):
             periodic_tasks.append(pt)
 

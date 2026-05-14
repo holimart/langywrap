@@ -16,6 +16,7 @@ from langywrap.helpers.process import run_subprocess
 try:
     from langywrap.router.backends import wrap_cmd
 except ImportError:  # defensive — backends may not always be available
+
     def wrap_cmd(  # type: ignore[misc]
         cmd: list[str],
         execwrap_path: Path | None = None,
@@ -40,8 +41,6 @@ class QualityReport:
     gates: list[GateResult] = field(default_factory=list)
     all_passed: bool = True
     total_duration: float = 0.0
-
-
 
 
 class QualityRunner:

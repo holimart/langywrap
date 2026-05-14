@@ -116,9 +116,7 @@ class CoverageReport(BaseModel):
                 for b in self.violations
             )
             lines.append(f"**Violations:** {viol}")
-            lines.append(
-                f"**Eligible types this cycle:** {sorted(self.violated_types())}"
-            )
+            lines.append(f"**Eligible types this cycle:** {sorted(self.violated_types())}")
         else:
             lines.append("**No violations.** All budgets within bounds.")
         return "\n".join(lines)

@@ -157,12 +157,10 @@ def _tool_hint(name: str) -> str:
             ".exec/rtk into this project."
         ),
         "textify": (
-            "Run from langywrap: ./just install-textify, or uv sync --extra "
-            "knowledge-graph."
+            "Run from langywrap: ./just install-textify, or uv sync --extra knowledge-graph."
         ),
         "graphify": (
-            "Run from langywrap: ./just install-graphify, or uv sync --extra "
-            "knowledge-graph."
+            "Run from langywrap: ./just install-graphify, or uv sync --extra knowledge-graph."
         ),
         "openwolf": (
             "Run from langywrap: ./just install-openwolf, then `langywrap "

@@ -254,6 +254,7 @@ If timeouts are frequent, increase timeout or switch to faster models.
 
     except Exception as exc:
         import logging
+
         logging.getLogger("langywrap.hyperagents").warning(
             "meta_mutate failed, falling back to random mutation: %s", exc
         )

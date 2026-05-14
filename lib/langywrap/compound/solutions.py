@@ -113,7 +113,8 @@ class SolutionStore:
         if query:
             q = query.lower()
             results = [
-                s for s in results
+                s
+                for s in results
                 if q in s.title.lower()
                 or q in s.problem.lower()
                 or q in s.solution.lower()

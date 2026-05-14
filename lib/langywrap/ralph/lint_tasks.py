@@ -205,9 +205,7 @@ def _run(text: str, config: LintConfig, *, autofix: bool) -> LintReport:
     return report
 
 
-def _autofix_pass(
-    lines: list[str], config: LintConfig, report: LintReport
-) -> list[str]:
+def _autofix_pass(lines: list[str], config: LintConfig, report: LintReport) -> list[str]:
     out: list[str] = []
     for i, line in enumerate(lines):
         new_line = line
@@ -245,9 +243,7 @@ def _autofix_pass(
     return out
 
 
-def _collapse_blank_runs(
-    lines: list[str], report: LintReport
-) -> list[str]:
+def _collapse_blank_runs(lines: list[str], report: LintReport) -> list[str]:
     out: list[str] = []
     blank_run = 0
     collapsed_at: list[int] = []
@@ -271,9 +267,7 @@ def _collapse_blank_runs(
     return out
 
 
-def _check_tasks(
-    lines: list[str], config: LintConfig, report: LintReport
-) -> None:
+def _check_tasks(lines: list[str], config: LintConfig, report: LintReport) -> None:
     """Per-task hard-fail rules."""
     allowed_types = set(config.allowed_task_types)
     allowed_priorities = set(config.allowed_priorities)
@@ -343,9 +337,7 @@ def _check_tasks(
                 )
 
 
-def _check_sections(
-    lines: list[str], config: LintConfig, report: LintReport
-) -> None:
+def _check_sections(lines: list[str], config: LintConfig, report: LintReport) -> None:
     """Section structure: ``## Active`` cap."""
     active_idx = None
     for i, line in enumerate(lines):
