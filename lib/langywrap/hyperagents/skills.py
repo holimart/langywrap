@@ -8,7 +8,7 @@ and the reflect_and_write loop creates new skills from task results.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -31,7 +31,7 @@ class Skill(BaseModel):
     tags: list[str] = Field(default_factory=list)
     language: str = "markdown"  # python, bash, lean, markdown, yaml
     category: str = "general"  # quality, security, data, lean, meta, compound
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     last_used: datetime | None = None
     version: int = 1
 
@@ -131,7 +131,7 @@ class SkillLibrary:
 
         total = skill.success_count + skill.failure_count
         skill.utility_score = skill.success_count / total if total > 0 else 0.5
-        skill.last_used = datetime.now(timezone.utc)
+        skill.last_used = datetime.now(UTC)
         self._save_catalog()
 
     def reflect_and_write(

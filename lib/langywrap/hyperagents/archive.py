@@ -9,7 +9,7 @@ performance + novelty weighting.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -28,7 +28,7 @@ class AgentVariant(BaseModel):
     novelty_score: float = 0.0
     metrics: dict[str, Any] = Field(default_factory=dict)
     mutations: list[str] = Field(default_factory=list)
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     project_origin: str = ""
 
     def to_yaml(self) -> str:

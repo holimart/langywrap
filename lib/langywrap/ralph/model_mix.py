@@ -120,7 +120,10 @@ def project_model_mix(
     return mix
 
 
-def module_model_mix(module: Any, substitutions: list[ModelSubstitution] | None = None) -> dict[str, Any]:
+def module_model_mix(
+    module: Any,
+    substitutions: list[ModelSubstitution] | None = None,
+) -> dict[str, Any]:
     """Return model mix for a Module-based Ralph pipeline."""
     substitutions = substitutions or []
     slots: list[dict[str, Any]] = []

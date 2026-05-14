@@ -101,7 +101,7 @@ _CYCLE_NUM_RE = re.compile(
 )
 
 
-def _read_prompt(step: "StepConfig") -> str:
+def _read_prompt(step: StepConfig) -> str:
     if step.builtin:
         return ""
     p = step.prompt_template
@@ -117,7 +117,7 @@ def _read_prompt(step: "StepConfig") -> str:
 
 
 def _rule_write_plan_target(
-    step: "StepConfig", prompt: str, _cfg: "RalphConfig"
+    step: StepConfig, prompt: str, _cfg: RalphConfig
 ) -> list[Finding]:
     """`output_as="plan"` + `validates_plan` ⇒ prompt must instruct an explicit
     Write of ``ralph/plan.md``.
@@ -149,7 +149,7 @@ def _rule_write_plan_target(
 
 
 def _rule_confirmation_token_in_prompt(
-    step: "StepConfig", prompt: str, _cfg: "RalphConfig"
+    step: StepConfig, prompt: str, _cfg: RalphConfig
 ) -> list[Finding]:
     """If a step expects a confirmation token, the prompt must mention it
     verbatim so the agent emits it."""
@@ -173,7 +173,7 @@ def _rule_confirmation_token_in_prompt(
 
 
 def _rule_cycle_num_requirement(
-    step: "StepConfig", prompt: str, cfg: "RalphConfig"
+    step: StepConfig, prompt: str, cfg: RalphConfig
 ) -> list[Finding]:
     """If RalphConfig.plan_require_current_cycle, the validating prompt must
     tell the agent to mention the current cycle number."""
@@ -198,7 +198,7 @@ def _rule_cycle_num_requirement(
 
 
 def _rule_plan_must_contain_in_prompt(
-    step: "StepConfig", prompt: str, cfg: "RalphConfig"
+    step: StepConfig, prompt: str, cfg: RalphConfig
 ) -> list[Finding]:
     """Every literal in plan_must_contain should appear in the validating
     prompt — otherwise the agent has no idea those strings are required."""
@@ -222,7 +222,7 @@ def _rule_plan_must_contain_in_prompt(
 
 
 def _rule_cycle_type_labels_in_source_prompt(
-    step: "StepConfig", prompt: str, cfg: "RalphConfig"
+    step: StepConfig, prompt: str, cfg: RalphConfig
 ) -> list[Finding]:
     """The step that drives cycle-type detection (cycle_type_source) must
     have a prompt that mentions the labels it is expected to emit.
@@ -264,7 +264,7 @@ def _rule_cycle_type_labels_in_source_prompt(
 
 
 def _rule_prompt_writes_runner_file(
-    step: "StepConfig", prompt: str, _cfg: "RalphConfig"
+    step: StepConfig, prompt: str, _cfg: RalphConfig
 ) -> list[Finding]:
     """Prompt tells the agent to Write a ``ralph/steps/<X>.md`` path that the
     runner already writes from the model's text response. Two writers, one
@@ -334,7 +334,7 @@ def _token_only_inside_runner_write_block(
 
 
 def _rule_confirmation_token_in_runner_file_block(
-    step: "StepConfig", prompt: str, _cfg: "RalphConfig"
+    step: StepConfig, prompt: str, _cfg: RalphConfig
 ) -> list[Finding]:
     """Gating rule for the 2026-05-12 finalize regression.
 
@@ -393,7 +393,7 @@ _RULES = [
 # Cross-step (whole-config) rules --------------------------------------------
 
 
-def _rule_orphan_plan_validator_config(cfg: "RalphConfig") -> list[Finding]:
+def _rule_orphan_plan_validator_config(cfg: RalphConfig) -> list[Finding]:
     """``plan_must_contain`` / ``plan_must_match`` / ``plan_require_current_cycle``
     only fire when at least one step has ``validates_plan=True``. If any of those
     fields are set but no step opts in, the validator never runs — silent
@@ -428,7 +428,7 @@ def _rule_orphan_plan_validator_config(cfg: "RalphConfig") -> list[Finding]:
     ]
 
 
-def _rule_orphan_plan_output(cfg: "RalphConfig") -> list[Finding]:
+def _rule_orphan_plan_output(cfg: RalphConfig) -> list[Finding]:
     """A step writing ``output_as='plan'`` without ``validates_plan=True`` is
     suspicious: it produces the canonical plan but no validation gates the
     next step. Warn so the operator confirms it's intentional."""
@@ -464,7 +464,7 @@ _CONFIG_RULES = [
 # Public entry point ---------------------------------------------------------
 
 
-def audit_prompt_contracts(cfg: "RalphConfig") -> list[Finding]:
+def audit_prompt_contracts(cfg: RalphConfig) -> list[Finding]:
     """Run every static prompt-vs-config rule across all steps in ``cfg``."""
     findings: list[Finding] = []
     for step in cfg.steps:

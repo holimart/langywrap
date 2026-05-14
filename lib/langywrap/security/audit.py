@@ -11,7 +11,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -82,7 +82,7 @@ class AuditLogger:
             Any additional key/value pairs to include in the log entry.
         """
         entry: dict[str, Any] = {
-            "timestamp": datetime.now(tz=timezone.utc).isoformat(),
+            "timestamp": datetime.now(tz=UTC).isoformat(),
             "project":   project or self.project,
             "command":   command,
             "decision":  _decision_str(decision),

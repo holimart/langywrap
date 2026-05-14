@@ -15,17 +15,15 @@ import re
 from pathlib import Path
 from typing import Any
 
+# ---------------------------------------------------------------------------
+# Model alias resolution
+# ---------------------------------------------------------------------------
+from langywrap.ralph.aliases import BUILTIN_ALIASES as _MODEL_ALIASES
 from langywrap.ralph.config import (
     QualityGateConfig,
     RalphConfig,
     StepConfig,
 )
-
-# ---------------------------------------------------------------------------
-# Model alias resolution
-# ---------------------------------------------------------------------------
-
-from langywrap.ralph.aliases import BUILTIN_ALIASES as _MODEL_ALIASES
 
 
 def _resolve_model(name: str, extra: dict[str, str] | None = None) -> str:

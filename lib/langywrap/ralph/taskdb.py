@@ -41,7 +41,7 @@ class TaskRecord:
         text = f"{self.status}\n{self.body}".lower()
         return any(word in text for word in ("blocked", "externally blocked", "pending external"))
 
-    def is_actionable(self, tasks_by_id: dict[str, "TaskRecord"]) -> bool:
+    def is_actionable(self, tasks_by_id: dict[str, TaskRecord]) -> bool:
         """Return true when this task has no open in-queue prerequisites."""
         if self.is_blocked:
             return False
@@ -264,9 +264,7 @@ class TaskDB:
             lowered = clean.lower()
             if not clean:
                 continue
-            if any(word in lowered for word in ("depends on", "requires", "blocked", "prerequisite", "before", "after")):
-                hints.append(clean[:220])
-            elif "->" in clean and re.search(r"\bH_[A-Za-z0-9_-]+", clean):
+            if any(word in lowered for word in ("depends on", "requires", "blocked", "prerequisite", "before", "after")) or "->" in clean and re.search(r"\bH_[A-Za-z0-9_-]+", clean):
                 hints.append(clean[:220])
             if len(hints) >= 4:
                 break

@@ -23,7 +23,7 @@ import tempfile
 import threading
 import time
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
@@ -66,7 +66,7 @@ _RATE_LIMIT_ALL_LITERALS = _RATE_LIMIT_TEXT_LITERALS + _RATE_LIMIT_ERROR_ONLY_LI
 # ---------------------------------------------------------------------------
 
 
-class Backend(str, Enum):
+class Backend(StrEnum):
     """Supported AI execution backends."""
 
     CLAUDE = "claude"

@@ -10,7 +10,7 @@ import contextlib
 import copy
 import random
 import uuid
-from enum import Enum
+from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
 from langywrap.hyperagents.archive import AgentVariant
@@ -19,7 +19,7 @@ if TYPE_CHECKING:
     from langywrap.router.router import ExecutionRouter
 
 
-class MutationType(str, Enum):
+class MutationType(StrEnum):
     SWAP_MODEL = "swap_model"
     CHANGE_TIMEOUT = "change_timeout"
     ADD_STEP = "add_step"

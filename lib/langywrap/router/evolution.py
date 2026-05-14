@@ -27,7 +27,7 @@ import json
 import logging
 import random
 import time
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
@@ -43,7 +43,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
-class ModelTier(str, Enum):
+class ModelTier(StrEnum):
     """Cost/capability tier for a model. Used by ``change_tier`` to pick
     replacements. Not stored on ``Step`` — the evolver recomputes tier by
     looking up the model in ``_MODELS_BY_TIER``."""

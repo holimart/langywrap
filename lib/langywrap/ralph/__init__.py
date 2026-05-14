@@ -38,7 +38,11 @@ from langywrap.ralph.lint_tasks import (
     LintConfig,
     LintFinding,
     LintReport,
+)
+from langywrap.ralph.lint_tasks import (
     autofix as lint_autofix,
+)
+from langywrap.ralph.lint_tasks import (
     lint as lint_tasks,
 )
 from langywrap.ralph.module import Module, ModuleRunner, StepDef
