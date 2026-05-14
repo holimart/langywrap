@@ -170,3 +170,42 @@ When asked to audit a ralph loop:
    `uv run python -m langywrap.ralph.validate_progress --orient ... --progress ...`
    should exit 1 once against the polluted state, then 0 after the next
    finalize-retry rewrites the entry.
+
+## Propagation status (2026-05-14)
+
+Applied across the langywrap-coupled ralph fleet. Two variants of the
+fix bundle depending on each repo's progress.md format:
+
+**FULL bundle** (TASK_TYPE rule + Proposed New Tasks + validate_progress
+gate + finalize-model upgrade where applicable) — for repos using the
+unified `## Cycle N\nTASK_TYPE: <type>` block format that
+`parse_cycle_blocks` reads:
+
+| repo         | commit  | model change            | branch / status                |
+|--------------|---------|-------------------------|--------------------------------|
+| riemann2     | e7d496a | OPENCODE → gpt-5.4      | RH, pushed                     |
+| ktorobi      | 4a868c9 | already gpt54mini (kept)| master, pushed                 |
+| compricing   | 8da3070 | already gpt5 (kept)     | testing-oc, pushed             |
+| sportsmarket | ab299cc | kimi → gpt-5.4          | master, pushed                 |
+| BSDconj      | 709a4ba | kimi → gpt-5.4          | master, **local only — push blocked by unrelated user commit + 114-cycle remote drift; resolve and push manually** |
+
+**PROMPT-ONLY bundle** (TASK_TYPE rule reframed as forward-looking note
+for migration; Proposed New Tasks plan→finalize handoff applied; no
+gate change because progress.md format differs from `parse_cycle_blocks`
+and validate_progress would fail every cycle):
+
+| repo            | commit  | model change          | progress.md format         | branch / status |
+|-----------------|---------|-----------------------|----------------------------|-----------------|
+| crunchdaoobesity| 7f5f777 | none                  | `## Cycle N Finalization Summary` blocks (no TASK_TYPE) | master, pushed |
+| whitehacky      | 2796d3e | gpt52 → gpt54         | markdown TABLE with `task_type` column | master, pushed |
+
+**Skipped (per user instruction):** lawy.
+
+**Format-mismatch follow-up** (separate, larger work): BSDconj's
+progress.md uses `## Cycle N — Adversarial Review:` style without
+`TASK_TYPE:` body lines; crunchdaoobesity uses non-Cycle headings;
+whitehacky uses a markdown table. None of these match
+`parse_cycle_blocks`, so the coverage-budget engine is silently
+inactive in those three repos. Porting them to the unified block
+format would re-activate the anti-collapse signal — a separate audit
+worth scheduling.
