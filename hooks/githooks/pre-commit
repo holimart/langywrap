@@ -14,9 +14,17 @@ fi
 ERRORS=0
 WARNINGS=0
 
-# Known-safe locations (file_regex:content_regex pairs to skip)
+# Known-safe locations (file_regex:content_regex pairs to skip).
+#
+# This is a per-repo allowlist — keep it specialised to your project's
+# actual false-positive sources, not generic fleet defaults. Examples:
+#   - A security detector module that contains pattern strings as data.
+#   - Demo/fixture files that intentionally use dangerous primitives.
+#   - ML codebases where `model.eval()` is a PyTorch mode-switch, not Python eval().
+#
+# Format: "<file_regex>:<content_regex>". Both must match to skip the line.
 ALLOWLIST=(
-    # Add entries like: "path/to/file:pattern_to_skip"
+    # Add entries like: "path/to/module\.py:.*"
 )
 
 is_allowlisted() {
