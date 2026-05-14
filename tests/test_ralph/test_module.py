@@ -380,6 +380,28 @@ class TestModuleRunner:
         assert report["steps"]["orient"]["prompt_exists"] is True
         assert "genome" in report
         assert "forward_source" in report
+        assert report["task_injection_errors"] == []
+
+    def test_dry_run_reports_invalid_periodic_task_template(self, prompts_dir, state_dir, tmp_path):
+        m = SimplePipeline()
+        m.verbose = False
+        runner = ModuleRunner(
+            m,
+            project_dir=tmp_path,
+            router=None,
+            budget=5,
+            periodic=[
+                {
+                    "every": 3,
+                    "marker": "lookback",
+                    "template": "- [ ] **[P2] Process lookback — cycle {cycle}**",
+                }
+            ],
+        )
+
+        report = runner.dry_run()
+        assert report["task_injection_errors"]
+        assert "cycle 3 periodic `lookback`" in report["task_injection_errors"][0]
 
     def test_run_stub_mode(self, prompts_dir, state_dir, tmp_path):
         """Full run in stub mode (no router)."""

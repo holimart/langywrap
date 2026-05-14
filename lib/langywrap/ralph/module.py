@@ -47,7 +47,12 @@ from typing import Any
 
 from langywrap.ralph.config import ModelSubstitution, substitute_model_name
 from langywrap.ralph.context import build_full_prompt, build_orient_context
-from langywrap.ralph.state import CycleResult, RalphState
+from langywrap.ralph.state import (
+    CycleResult,
+    RalphState,
+    render_hygiene_task_content,
+    validate_injected_task_content,
+)
 
 log = logging.getLogger(__name__)
 
@@ -681,6 +686,14 @@ class ModuleRunner:
         self._log(f"  Project: {self.project_dir}")
         self._log(f"  Steps:   {list(self.module._step_defs.keys())}")
 
+        injection_errors = self._audit_future_task_injections(start, end)
+        if injection_errors:
+            joined = "\n".join(f"  - {err}" for err in injection_errors)
+            raise RuntimeError(
+                "Task injection preflight found invalid configured task template(s):\n"
+                f"{joined}"
+            )
+
         for cycle_num in range(start, end + 1):
             pending = self.state.pending_count()
             if pending == 0:
@@ -771,8 +784,55 @@ class ModuleRunner:
         report["cycle_count"] = self.state.get_cycle_count()
         report["pending_tasks"] = self.state.pending_count()
         report["router"] = "configured" if self.router else "stub"
+        start = self.state.get_cycle_count() + 1
+        report["task_injection_errors"] = self._audit_future_task_injections(
+            start,
+            start + max(1, self.budget) - 1,
+        )
 
         return report
+
+    def _audit_future_task_injections(self, start_cycle: int, end_cycle: int) -> list[str]:
+        """Render configured future injections and validate their checkbox format."""
+        errors: list[str] = []
+        if end_cycle < start_cycle:
+            return errors
+
+        today = date.today().isoformat()
+        gate_cmd = self.module.gates[0] if self.module.gates else ""
+        for cycle_num in range(start_cycle, end_cycle + 1):
+            if (
+                self.module.hygiene_every is not None
+                and self.module.hygiene_every > 0
+                and cycle_num % self.module.hygiene_every == 0
+            ):
+                try:
+                    content = render_hygiene_task_content(
+                        cycle_num,
+                        quality_gate_cmd=gate_cmd,
+                        today=today,
+                    )
+                    validate_injected_task_content(content, source="hygiene task")
+                except Exception as exc:
+                    errors.append(f"cycle {cycle_num} hygiene: {exc}")
+
+            for pt in self._periodic:
+                every = pt.get("every", 0)
+                if not every or cycle_num % every != 0:
+                    continue
+                marker = pt.get("marker", "periodic")
+                template = pt.get("template", "")
+                if not template:
+                    continue
+                try:
+                    content = template.format(cycle=cycle_num, date=today)
+                    full_marker = f"{marker}-cycle-{cycle_num}"
+                    if full_marker not in content:
+                        content = content.rstrip() + f" <!-- {full_marker} -->\n"
+                    validate_injected_task_content(content, source=f"periodic task `{marker}`")
+                except Exception as exc:
+                    errors.append(f"cycle {cycle_num} periodic `{marker}`: {exc}")
+        return errors
 
     # -----------------------------------------------------------------------
     # Single cycle execution

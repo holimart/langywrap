@@ -550,7 +550,7 @@ def extract_tmux_error(text: str) -> dict[str, Any] | None:
     lines = text.splitlines()
     start_idx = 0
     for idx, line in enumerate(lines):
-        if re.search(r"\[ralph\]\s+RalphLoop starting:", line):
+        if re.search(r"\[ralph\]\s+RalphLoop starting:|Cycle \d+/\d+", line):
             start_idx = idx
     scoped_lines = lines[start_idx:]
     markers = [
@@ -571,7 +571,10 @@ def extract_tmux_error(text: str) -> dict[str, Any] | None:
     start = max(match_idx - 6, 0)
     end = min(match_idx + 50, len(scoped_lines))
     excerpt = scoped_lines[start:end]
-    headline = next((line.strip() for line in scoped_lines[match_idx:end] if line.strip()), "tmux error")
+    headline = next(
+        (line.strip() for line in scoped_lines[match_idx:end] if line.strip()),
+        "tmux error",
+    )
     return {
         "headline": headline[:240],
         "line": start_idx + match_idx + 1,
@@ -579,7 +582,45 @@ def extract_tmux_error(text: str) -> dict[str, Any] | None:
     }
 
 
-def collect_tmux_process_tree(project: ProjectRef, pane_pid: str, out_dir: Path) -> list[dict[str, Any]]:
+def extract_ralph_run_summary(text: str) -> dict[str, Any]:
+    """Return the latest visible Ralph run progress from captured tmux output."""
+    summary: dict[str, Any] = {}
+
+    completed = list(re.finditer(r"Completed\s+(\d+)\s+cycles\.", text))
+    cycles = list(re.finditer(r"Cycle\s+(\d+)/(\d+)\s+\((\d+)\s+pending tasks\)", text))
+    latest_completed_at = completed[-1].start() if completed else -1
+    latest_cycle_at = cycles[-1].start() if cycles else -1
+
+    if completed and latest_completed_at > latest_cycle_at:
+        summary["status"] = "completed"
+        summary["completed_cycles"] = int(completed[-1].group(1))
+
+    confirmed = list(re.finditer(r"Fully confirmed:\s+(\d+)/(\d+)", text))
+    if confirmed and latest_completed_at > latest_cycle_at:
+        summary["confirmed_cycles"] = int(confirmed[-1].group(1))
+        summary["confirmed_total"] = int(confirmed[-1].group(2))
+
+    if cycles and latest_cycle_at > latest_completed_at:
+        latest = cycles[-1]
+        summary.setdefault("status", "running")
+        summary["cycle_current"] = int(latest.group(1))
+        summary["cycle_total"] = int(latest.group(2))
+        summary["pending_tasks"] = int(latest.group(3))
+
+    steps = list(re.finditer(r"STEP:\s+([A-Z0-9_]+)\s+", text))
+    if steps:
+        summary["step"] = steps[-1].group(1).lower()
+
+    heartbeats = list(re.finditer(r"\[heartbeat\s+([^\]]+)\]", text))
+    if heartbeats:
+        summary["heartbeat"] = heartbeats[-1].group(1)
+
+    return summary
+
+
+def collect_tmux_process_tree(
+    project: ProjectRef, pane_pid: str, out_dir: Path
+) -> list[dict[str, Any]]:
     result = (
         run_remote(project.host or "", process_tree_command(pane_pid), timeout=20)
         if project.is_remote
@@ -602,7 +643,7 @@ def collect_tmux(project: ProjectRef, out_dir: Path, lines: int) -> dict[str, An
         else run_local(["bash", "-lc", exists_cmd], timeout=20)
     )
     if not exists.ok:
-        status = classify_tmux("", "", False) | {"session": session}
+        status = {**classify_tmux("", "", False), "session": session, "ralph_run": {}}
         write_text(out_dir / "tmux" / "status.json", json.dumps(status, indent=2) + "\n")
         return status
 
@@ -624,21 +665,32 @@ def collect_tmux(project: ProjectRef, out_dir: Path, lines: int) -> dict[str, An
         if project.is_remote
         else run_local(["bash", "-lc", capture_cmd], timeout=20)
     )
-    pane_command = pane_result.stdout.strip().splitlines()[-1] if pane_result.stdout.strip() else ""
-    pane_pid = pane_pid_result.stdout.strip().splitlines()[-1] if pane_pid_result.stdout.strip() else ""
+    pane_command = (
+        pane_result.stdout.strip().splitlines()[-1] if pane_result.stdout.strip() else ""
+    )
+    pane_pid = (
+        pane_pid_result.stdout.strip().splitlines()[-1]
+        if pane_pid_result.stdout.strip()
+        else ""
+    )
     pane_text = capture_result.stdout
     write_command_result(out_dir / "tmux" / "pane_capture.txt", capture_result)
     process_tree = collect_tmux_process_tree(project, pane_pid, out_dir)
     error = extract_tmux_error(pane_text)
     if error is not None:
         write_text(out_dir / "tmux" / "error.txt", error["excerpt"] + "\n")
-    status = classify_tmux(pane_text, pane_command, True, process_tree) | {
+    ralph_run = extract_ralph_run_summary(pane_text)
+    status = {
+        **classify_tmux(pane_text, pane_command, True, process_tree),
         "session": session,
         "pane_pid": pane_pid,
         "process_count": len(process_tree),
         "process_tree": process_tree,
         "error": error,
+        "ralph_run": ralph_run,
     }
+    if ralph_run.get("status") == "completed" and status["state"] == "running-or-idle":
+        status["state"] = "awaiting-input-or-finished"
     write_text(
         out_dir / "tmux" / "status.json", json.dumps(status, indent=2, sort_keys=True) + "\n"
     )
@@ -683,8 +735,8 @@ def collect_model_mix(
     """Collect effective model-provider mix by loading the project config directly."""
     specs_json = json.dumps(replacement_specs)
     helper_lib = model_mix_helper_lib(project)
-    helper_python = model_mix_helper_python(project)
-    command = f"""{shlex.quote(helper_python)} - <<'PY'
+    helper_python = model_mix_helper_command(project)
+    command = f"""{helper_python} - <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -704,7 +756,11 @@ PY"""
     if obj is None:
         obj = {
             "ok": False,
-            "error": result.stderr.strip() or result.stdout.strip() or "failed to collect model mix",
+            "error": (
+                result.stderr.strip()
+                or result.stdout.strip()
+                or "failed to collect model mix"
+            ),
             "replacements": replacement_specs,
         }
     else:
@@ -726,6 +782,19 @@ def model_mix_helper_python(project: ProjectRef) -> str:
         return str(PurePosixPath(project.path).parent / "langywrap" / ".venv" / "bin" / "python")
     local_venv = REPO_ROOT / ".venv" / "bin" / "python"
     return str(local_venv if local_venv.exists() else "python3")
+
+
+def model_mix_helper_command(project: ProjectRef) -> str:
+    """Return a shell command that runs Python with langywrap dependencies."""
+    if project.is_remote:
+        return shlex.quote(model_mix_helper_python(project))
+    local_venv = REPO_ROOT / ".venv" / "bin" / "python"
+    if local_venv.exists():
+        return shlex.quote(str(local_venv))
+    uv = REPO_ROOT / "uv"
+    if uv.exists():
+        return f"{shlex.quote(str(uv))} run python"
+    return "python3"
 
 
 def inspect_project(
@@ -778,14 +847,18 @@ def inspect_project(
 
 
 def print_summary_table(summaries: list[dict[str, Any]]) -> None:
-    print(
+    header = (
         "\nproject         mode           git            progress      "
-        "tmux                         models                     tasks.md"
+        "tmux                         ralph                         "
+        "models                     tasks.md"
     )
-    print(
+    sep = (
         "--------------  -------------  -------------  ------------  "
-        "---------------------------  -------------------------  ----------------"
+        "---------------------------  ----------------------------  "
+        "-------------------------  ----------------"
     )
+    print(header)
+    print(sep)
     for summary in summaries:
         if "error" in summary:
             print(f"{summary.get('project', '?'):<14}  error        {summary['error']}")
@@ -805,13 +878,39 @@ def print_summary_table(summaries: list[dict[str, Any]]) -> None:
         tmux_label = f"{tmux.get('session', '?')}:{tmux.get('state', '?')}"
         if tmux.get("error"):
             tmux_label = f"{tmux_label}+error"
+        ralph_label = format_ralph_run(tmux.get("ralph_run") or {})
         model_label = format_model_mix(summary.get("model_mix") or {})
         tasks = summary.get("tasks_md") or "missing"
         print(
             f"{summary['project']:<14}  {summary.get('mode', '?'):<13}  "
             f"{git_label:<13}  {progress_label:<12}  {tmux_label:<27}  "
-            f"{model_label:<25}  {tasks}"
+            f"{ralph_label:<28}  {model_label:<25}  {tasks}"
         )
+
+
+def format_ralph_run(run: dict[str, Any]) -> str:
+    if not run:
+        return "run: n/a"
+    if run.get("status") == "completed":
+        completed = run.get("completed_cycles", "?")
+        confirmed = run.get("confirmed_cycles")
+        total = run.get("confirmed_total")
+        if confirmed is not None and total is not None:
+            return f"done {completed}; confirmed {confirmed}/{total}"
+        return f"done {completed}"
+    current = run.get("cycle_current")
+    total = run.get("cycle_total")
+    pending = run.get("pending_tasks")
+    parts = []
+    if current is not None and total is not None:
+        parts.append(f"cycle {current}/{total}")
+    if pending is not None:
+        parts.append(f"{pending} pending")
+    if run.get("step"):
+        parts.append(str(run["step"]))
+    if run.get("heartbeat"):
+        parts.append(f"hb {run['heartbeat']}")
+    return "; ".join(parts) if parts else "run: n/a"
 
 
 def format_model_mix(model_mix: dict[str, Any]) -> str:

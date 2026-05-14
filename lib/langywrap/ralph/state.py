@@ -11,22 +11,24 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
+
+from langywrap.ralph.markdown_todo import CHECKBOX_PREFIX_RE, UNIFIED_TASK_LINE_RE
 
 # ---------------------------------------------------------------------------
 # Enums
 # ---------------------------------------------------------------------------
 
 
-class TaskStatus(str, Enum):
+class TaskStatus(StrEnum):
     PENDING = "PENDING"
     IN_PROGRESS = "IN_PROGRESS"
     COMPLETED = "COMPLETED"
     EXHAUSTED = "EXHAUSTED"
 
 
-class TaskPriority(str, Enum):
+class TaskPriority(StrEnum):
     P0 = "P0"  # critical / blocker
     P1 = "P1"  # high
     P2 = "P2"  # normal
@@ -108,6 +110,53 @@ class CycleResult:
     @property
     def step_names_completed(self) -> list[str]:
         return list(self.steps_completed.keys())
+
+
+def validate_injected_task_content(content: str, *, source: str) -> None:
+    """Reject injected task templates that would create non-unified checkboxes."""
+    checkbox_lines = [line for line in content.splitlines() if CHECKBOX_PREFIX_RE.match(line)]
+    if not checkbox_lines:
+        raise ValueError(f"{source} must include a unified checkbox task line")
+    for line in checkbox_lines:
+        if not UNIFIED_TASK_LINE_RE.match(line):
+            raise ValueError(
+                f"{source} checkbox line must match unified format: "
+                "`- [ ] **[Pn] task:slug** [task_type] label`; "
+                f"got {line!r}"
+            )
+
+
+def render_hygiene_task_content(
+    cycle_num: int,
+    *,
+    template: str = "",
+    quality_gate_cmd: str = "",
+    today: str | None = None,
+) -> str:
+    """Render a hygiene task block without mutating tasks.md."""
+    marker = f"hygiene-cycle-{cycle_num}"
+    rendered_date = today or datetime.now().strftime("%Y-%m-%d")
+    qg = quality_gate_cmd or "run quality checks"
+
+    if template:
+        return template.format(
+            cycle=cycle_num,
+            date=rendered_date,
+            quality_gate_cmd=qg,
+        )
+    return (
+        f"\n- [ ] **[P2] task:{marker}** [hygiene] "
+        f"Technical hygiene — cycle {cycle_num} "
+        f"<!-- {marker} -->\n"
+        f"  - Status: PENDING\n"
+        f"  - Added: {rendered_date} | Source: langywrap (scheduled hygiene)\n"
+        f"  - Why: Scheduled maintenance every N cycles\n"
+        f"  - Definition of done:\n"
+        f"    1. Run `{qg}` — fix ALL lint, type, and test failures\n"
+        f"    2. Review progress.md for TODO/debt callouts\n"
+        f"    3. Clean up any temporary files or dead code\n"
+        f"    4. Verify project still builds and tests pass\n\n"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -320,28 +369,13 @@ class RalphState:
         if marker in text:
             return False
 
-        today = datetime.now().strftime("%Y-%m-%d")
-        qg = quality_gate_cmd or "run quality checks"
+        task_block = render_hygiene_task_content(
+            cycle_num,
+            template=template,
+            quality_gate_cmd=quality_gate_cmd,
+        )
 
-        if template:
-            task_block = template.format(
-                cycle=cycle_num,
-                date=today,
-                quality_gate_cmd=qg,
-            )
-        else:
-            task_block = (
-                f"\n- [ ] **[P2] Technical hygiene — cycle {cycle_num}** "
-                f"<!-- {marker} -->\n"
-                f"  - Status: PENDING\n"
-                f"  - Added: {today} | Source: langywrap (scheduled hygiene)\n"
-                f"  - Why: Scheduled maintenance every N cycles\n"
-                f"  - Definition of done:\n"
-                f"    1. Run `{qg}` — fix ALL lint, type, and test failures\n"
-                f"    2. Review progress.md for TODO/debt callouts\n"
-                f"    3. Clean up any temporary files or dead code\n"
-                f"    4. Verify project still builds and tests pass\n\n"
-            )
+        validate_injected_task_content(task_block, source="hygiene task")
 
         # Insert before "## Completed" section if it exists, else append
         completed_match = re.search(r"^## Completed", text, re.MULTILINE)
@@ -375,6 +409,8 @@ class RalphState:
         # Ensure marker comment is in the content
         if full_marker not in content:
             content = content.rstrip() + f" <!-- {full_marker} -->\n"
+
+        validate_injected_task_content(content, source=f"periodic task `{marker}`")
 
         # Insert before "## Completed" section if it exists, else append
         completed_match = re.search(r"^## Completed", text, re.MULTILINE)

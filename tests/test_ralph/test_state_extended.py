@@ -7,6 +7,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from langywrap.ralph.lint_tasks import LintConfig, lint
 from langywrap.ralph.state import CycleResult, RalphState, TaskStatus
 
 
@@ -20,6 +21,11 @@ def state(tmp_path: Path) -> RalphState:
 def _write_tasks(state: RalphState, content: str) -> None:
     state.tasks_file.parent.mkdir(parents=True, exist_ok=True)
     state.tasks_file.write_text(content)
+
+
+def _assert_tasks_lint_clean(text: str, *task_types: str) -> None:
+    report = lint(text, LintConfig(allowed_task_types=task_types))
+    assert report.is_clean, report.render()
 
 
 # ---------------------------------------------------------------------------
@@ -93,7 +99,12 @@ class TestInjectHygieneTask:
         injected = state.inject_hygiene_task(5)
         assert injected is True
         text = state.tasks_file.read_text()
-        assert "hygiene-cycle-5" in text
+        assert "- [ ] **[P2] task:hygiene-cycle-5** [hygiene] Technical hygiene" in text
+
+    def test_injected_task_lints_in_unified_format(self, state: RalphState):
+        _write_tasks(state, "## Pending\n")
+        assert state.inject_hygiene_task(5, quality_gate_cmd="lake build") is True
+        _assert_tasks_lint_clean(state.tasks_file.read_text(), "hygiene")
 
     def test_no_duplicate_injection(self, state: RalphState):
         _write_tasks(state, "# Tasks\n- [ ] task-1 Existing\n")
@@ -101,11 +112,24 @@ class TestInjectHygieneTask:
         injected_again = state.inject_hygiene_task(5)
         assert injected_again is False
 
-    def test_custom_template(self, state: RalphState):
-        _write_tasks(state, "- [ ] task-1 base\n")
-        state.inject_hygiene_task(2, template="Custom hygiene for cycle {cycle}")
+    def test_custom_template_lints_when_unified(self, state: RalphState):
+        _write_tasks(state, "- [ ] **[P2] task:task-1** [hygiene] base\n")
+        template = (
+            "- [ ] **[P2] task:hygiene-cycle-{cycle}** [hygiene] "
+            "Custom hygiene for cycle {cycle}"
+        )
+        state.inject_hygiene_task(2, template=template)
         text = state.tasks_file.read_text()
         assert "Custom hygiene for cycle 2" in text
+        _assert_tasks_lint_clean(text, "hygiene")
+
+    def test_rejects_non_unified_hygiene_template(self, state: RalphState):
+        _write_tasks(state, "## Pending\n")
+        with pytest.raises(ValueError, match="unified format"):
+            state.inject_hygiene_task(
+                2, template="- [ ] **[P2] Technical hygiene — cycle {cycle}**"
+            )
+        assert state.tasks_file.read_text() == "## Pending\n"
 
     def test_inserts_before_completed_section(self, state: RalphState):
         _write_tasks(state, "- [ ] task-1 Active\n\n## Completed\n- [x] old-task\n")
@@ -115,6 +139,12 @@ class TestInjectHygieneTask:
         hygiene_pos = text.find("hygiene-cycle-3")
         completed_pos = text.find("## Completed")
         assert hygiene_pos < completed_pos
+
+    def test_periodic_injected_task_lints_in_unified_format(self, state: RalphState):
+        _write_tasks(state, "## Pending\n")
+        content = "- [ ] **[P2] task:lookback-cycle-10** [lookback] Process lookback"
+        assert state.inject_periodic_task(10, marker="lookback", content=content) is True
+        _assert_tasks_lint_clean(state.tasks_file.read_text(), "lookback")
 
 
 # ---------------------------------------------------------------------------
@@ -131,31 +161,60 @@ class TestInjectPeriodicTask:
         assert state.inject_periodic_task(1, content="") is False
 
     def test_injects_content(self, state: RalphState):
-        _write_tasks(state, "- [ ] t1 Task\n")
-        result = state.inject_periodic_task(1, marker="lookback", content="lookback content")
+        _write_tasks(state, "- [ ] **[P2] task:t1** [lookback] Task\n")
+        result = state.inject_periodic_task(
+            1,
+            marker="lookback",
+            content="- [ ] **[P2] task:lookback-cycle-1** [lookback] lookback content",
+        )
         assert result is True
         text = state.tasks_file.read_text()
         assert "lookback content" in text
 
     def test_dedup_by_marker(self, state: RalphState):
-        _write_tasks(state, "- [ ] t1 Task\n")
-        state.inject_periodic_task(1, marker="review", content="Review content")
-        result2 = state.inject_periodic_task(1, marker="review", content="Review content")
+        _write_tasks(state, "- [ ] **[P2] task:t1** [lookback] Task\n")
+        content = "- [ ] **[P2] task:review-cycle-1** [lookback] Review content"
+        state.inject_periodic_task(1, marker="review", content=content)
+        result2 = state.inject_periodic_task(1, marker="review", content=content)
         assert result2 is False
 
     def test_adds_marker_comment_when_missing(self, state: RalphState):
-        _write_tasks(state, "- [ ] t1 Task\n")
-        state.inject_periodic_task(1, marker="custom", content="Content without marker")
+        _write_tasks(state, "- [ ] **[P2] task:t1** [lookback] Task\n")
+        state.inject_periodic_task(
+            1,
+            marker="custom",
+            content="- [ ] **[P2] task:custom-cycle-1** [lookback] Content without marker",
+        )
         text = state.tasks_file.read_text()
         assert "custom-cycle-1" in text
 
     def test_inserts_before_completed_section(self, state: RalphState):
         _write_tasks(state, "Pending stuff\n\n## Completed\n- [x] done\n")
-        state.inject_periodic_task(1, marker="lb", content="lookback task")
+        state.inject_periodic_task(
+            1,
+            marker="lb",
+            content="- [ ] **[P2] task:lb-cycle-1** [lookback] lookback task",
+        )
         text = state.tasks_file.read_text()
         lb_pos = text.find("lookback task")
         completed_pos = text.find("## Completed")
         assert lb_pos < completed_pos
+
+    def test_rejects_non_unified_checkbox_content(self, state: RalphState):
+        _write_tasks(state, "## Pending\n")
+        with pytest.raises(ValueError, match="unified format"):
+            state.inject_periodic_task(
+                1,
+                marker="lookback",
+                content="- [ ] **[P2] Technical hygiene — cycle 1**",
+            )
+        assert state.tasks_file.read_text() == "## Pending\n"
+
+    def test_rejects_content_without_checkbox_task(self, state: RalphState):
+        _write_tasks(state, "## Pending\n")
+        with pytest.raises(ValueError, match="must include a unified checkbox"):
+            state.inject_periodic_task(1, marker="lookback", content="lookback content")
+        assert state.tasks_file.read_text() == "## Pending\n"
 
 
 # ---------------------------------------------------------------------------
