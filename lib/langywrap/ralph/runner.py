@@ -153,8 +153,7 @@ class RalphLoop:
         if injection_errors:
             joined = "\n".join(f"  - {err}" for err in injection_errors)
             raise RuntimeError(
-                "Task injection preflight found invalid configured task template(s):\n"
-                f"{joined}"
+                f"Task injection preflight found invalid configured task template(s):\n{joined}"
             )
 
         for cycle_num in range(start_cycle, end_cycle + 1):
@@ -170,37 +169,10 @@ class RalphLoop:
             self._log(f"Cycle {cycle_num}/{end_cycle}  ({pending} pending tasks)")
             self._log(f"{'=' * 60}")
 
-            # Hygiene injection
-            if self.config.hygiene_every_n and cycle_num % self.config.hygiene_every_n == 0:
-                qg_cmd = self.config.quality_gate.command if self.config.quality_gate else ""
-                injected = self.state.inject_hygiene_task(
-                    cycle_num,
-                    template=self.config.hygiene_template,
-                    quality_gate_cmd=qg_cmd,
-                )
-                if injected:
-                    self._log(f"  [hygiene] Injected maintenance task for cycle {cycle_num}")
-
-            # Periodic task injections (lookback, etc.)
-            for pt in self.config.periodic_tasks:
-                every = pt.get("every", 0)
-                if every and cycle_num % every == 0:
-                    marker = pt.get("marker", "periodic")
-                    template = pt.get("template", "")
-                    if template:
-                        from datetime import date
-
-                        rendered = template.format(
-                            cycle=cycle_num,
-                            date=date.today().isoformat(),
-                        )
-                        injected = self.state.inject_periodic_task(
-                            cycle_num,
-                            marker=marker,
-                            content=rendered,
-                        )
-                        if injected:
-                            self._log(f"  [{marker}] Injected task for cycle {cycle_num}")
+            # Hygiene + periodic synthetic candidates are emitted by
+            # inline_orient at selection time, sourced from progress.md
+            # history. They are never persisted into tasks.md.
+            # See: lib/langywrap/ralph/candidate_sources.py.
 
             # Check for adversarial every-N cycle
             is_adversarial = (
@@ -343,9 +315,7 @@ class RalphLoop:
                         f"{step.run_if_step} !~ /{step.run_if_pattern}/)\n"
                     )
                     continue
-                self._log(
-                    f"  │   When: {step.run_if_step} =~ /{step.run_if_pattern}/ → MET"
-                )
+                self._log(f"  │   When: {step.run_if_step} =~ /{step.run_if_pattern}/ → MET")
 
             # Cycle-type gating: skip step if cycle type doesn't match
             if step.run_if_cycle_types and cycle_type not in step.run_if_cycle_types:
@@ -622,9 +592,7 @@ class RalphLoop:
         """
         if step.builtin:
             output = self._run_builtin_step(step, cycle_context)
-            self._log(
-                f"  │   Builtin: {step.builtin} — produced {len(output):,} chars without LLM"
-            )
+            self._log(f"  │   Builtin: {step.builtin} — produced {len(output):,} chars without LLM")
             return output, True, None
 
         prompt = self.build_prompt(step, cycle_context)
@@ -697,6 +665,10 @@ class RalphLoop:
         Raises ``ValueError`` on lint hard-fail or empty eligible set — the
         step framework treats this as a step failure.
         """
+        from langywrap.ralph.candidate_sources import (
+            sources_from_config,
+            synthesize_candidates,
+        )
         from langywrap.ralph.coverage_budget import (
             CoverageBudget,
             evaluate_coverage,
@@ -734,8 +706,7 @@ class RalphLoop:
                 tasks_text = lint_report.fixed_text
             if not lint_report.is_clean:
                 raise ValueError(
-                    "inline_orient: preflight lint hard-failed:\n"
-                    + lint_report.render()
+                    "inline_orient: preflight lint hard-failed:\n" + lint_report.render()
                 )
             lint_summary = (
                 f"lint: clean ({len(lint_report.autofixed)} autofix"
@@ -749,9 +720,31 @@ class RalphLoop:
 
         # ── Pick task ─────────────────────────────────────────────────────────
         parsed = parse_unified_tasks(tasks_text)
-        pending = [t for t in parsed if t.is_open]
+        user_pending = [t for t in parsed if t.is_open]
+
+        # History-driven synthetic candidates (hygiene, periodic, etc.).
+        # They are computed at orient time from progress.md only — never
+        # persisted to tasks.md. If a candidate is outranked by a higher-
+        # priority user task this cycle, the same source will re-emit it
+        # next cycle automatically because progress.md still shows the gap.
+        cycle_num = cycle_context.get("cycle_num", 0)
+        candidate_sources = sources_from_config(
+            hygiene_every_n=self.config.hygiene_every_n,
+            periodic_tasks=self.config.periodic_tasks,
+        )
+        synthetic = synthesize_candidates(
+            candidate_sources,
+            cycle_num=cycle_num,
+            progress_text=progress_text,
+        )
+        pending = user_pending + synthetic
+
         eligible = filter_eligible_tasks(pending, coverage)
         # Stable order: priority (P0 first), then file order.
+        # Synthetic candidates carry line_no=-1 so they sort *before*
+        # file-resident tasks at the same priority. Operators who want
+        # a backlog task to outrank a synthetic should give it a higher
+        # priority — synthetic candidates default to P2.
         eligible_sorted = sorted(eligible, key=lambda t: (t.priority, t.line_no))
         selected = eligible_sorted[0] if eligible_sorted else None
 
@@ -776,7 +769,13 @@ class RalphLoop:
         # Without this line every plan/execute step that has ``when_cycle=[…]``
         # is SKIPPED and the anti-mode-collapse engine stays dormant.
         # See: solutions/2026-05-12_inline_orient_missing_task_type_token.md
-        cycle_num = cycle_context.get("cycle_num", 0)
+        synth_summary = (
+            ", ".join(
+                f"`task:{s.slug}` ({s.task_type}, {s.priority})" for s in synthetic
+            )
+            if synthetic
+            else "none"
+        )
         lines = [
             f"# Orient — Cycle {cycle_num}",
             "",
@@ -789,7 +788,8 @@ class RalphLoop:
             coverage.render_summary(),
             "",
             "## Picker Trace",
-            f"- Pending tasks: {len(pending)}",
+            f"- Pending user tasks: {len(user_pending)}",
+            f"- Synthetic candidates: {synth_summary}",
             f"- Eligible after coverage filter: {len(eligible)}",
             f"- Selected: `task:{selected.slug}` "
             f"(priority {selected.priority}, type {selected.task_type})",
@@ -1025,50 +1025,29 @@ class RalphLoop:
     # ------------------------------------------------------------------
 
     def _audit_future_task_injections(self, start_cycle: int, end_cycle: int) -> list[str]:
-        """Render configured future injections and validate their checkbox format."""
-        from datetime import date
+        """Validate candidate-source configs that drive synthetic orient tasks.
 
-        from langywrap.ralph.state import (
-            render_hygiene_task_content,
-            validate_injected_task_content,
-        )
+        Since synthetic candidates are now ``CheckboxTask`` objects emitted
+        at orient time (not raw markdown appended to tasks.md), there is no
+        rendered-template content to lint. This audit instead sanity-checks
+        each configured ``hygiene_every_n`` / ``periodic_tasks`` entry: the
+        cadence must be a positive integer and the implied task_type must be
+        a valid slug. Returns an empty list when everything is well-formed.
+        """
+        import re as _re
+
+        from langywrap.ralph.candidate_sources import sources_from_config
 
         errors: list[str] = []
-        if end_cycle < start_cycle:
-            return errors
-
-        qg_cmd = self.config.quality_gate.command if self.config.quality_gate else ""
-        today = date.today().isoformat()
-
-        for cycle_num in range(start_cycle, end_cycle + 1):
-            if self.config.hygiene_every_n and cycle_num % self.config.hygiene_every_n == 0:
-                try:
-                    content = render_hygiene_task_content(
-                        cycle_num,
-                        template=self.config.hygiene_template,
-                        quality_gate_cmd=qg_cmd,
-                        today=today,
-                    )
-                    validate_injected_task_content(content, source="hygiene task")
-                except Exception as exc:
-                    errors.append(f"cycle {cycle_num} hygiene: {exc}")
-
-            for pt in self.config.periodic_tasks:
-                every = pt.get("every", 0)
-                if not every or cycle_num % every != 0:
-                    continue
-                marker = pt.get("marker", "periodic")
-                template = pt.get("template", "")
-                if not template:
-                    continue
-                try:
-                    content = template.format(cycle=cycle_num, date=today)
-                    full_marker = f"{marker}-cycle-{cycle_num}"
-                    if full_marker not in content:
-                        content = content.rstrip() + f" <!-- {full_marker} -->\n"
-                    validate_injected_task_content(content, source=f"periodic task `{marker}`")
-                except Exception as exc:
-                    errors.append(f"cycle {cycle_num} periodic `{marker}`: {exc}")
+        sources = sources_from_config(
+            hygiene_every_n=self.config.hygiene_every_n,
+            periodic_tasks=self.config.periodic_tasks,
+        )
+        slug_re = _re.compile(r"^[a-z_][a-z0-9_]*$")
+        for src in sources:
+            ttype = getattr(src, "effective_task_type", None) or getattr(src, "task_type", "")
+            if not ttype or not slug_re.match(ttype):
+                errors.append(f"candidate source has invalid task_type {ttype!r}: {src!r}")
         return errors
 
     def dry_run(self) -> dict:
@@ -1390,11 +1369,7 @@ class RalphLoop:
         """
         # Pre-gate: when gate_mode="before", run the gate first and skip the
         # LLM entirely if it already passes (e.g. fix/lint steps that are no-ops).
-        if (
-            step.retry_count > 0
-            and step.retry_gate_command
-            and step.retry_gate_mode == "before"
-        ):
+        if step.retry_count > 0 and step.retry_gate_command and step.retry_gate_mode == "before":
             pre_pass, _ = self._run_gate_command(step.retry_gate_command)
             if pre_pass:
                 self._log(f"    [{step.name}] Gate already passing — LLM skipped")
@@ -1758,9 +1733,7 @@ class RalphLoop:
             counts[path] = self._count_guard_entries(path, spec.get("entry_pattern", ""))
         return counts
 
-    def _check_append_guards(
-        self, step: Any, pre_counts: dict[str, int]
-    ) -> list[str]:
+    def _check_append_guards(self, step: Any, pre_counts: dict[str, int]) -> list[str]:
         """Re-count guarded files after the step. Return human-readable
         errors for any guard whose entry count dropped below the
         configured tolerance or absolute floor.

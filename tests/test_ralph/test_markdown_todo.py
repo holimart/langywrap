@@ -8,6 +8,7 @@ from langywrap.ralph.lint_tasks import LintConfig, lint
 from langywrap.ralph.markdown_todo import (
     AutoPin,
     apply_auto_pins,
+    bump_priority,
     dedupe_cycles,
     find_first_open_task,
     parse_auto_pin_lines,
@@ -309,3 +310,65 @@ def test_apply_auto_pins_sorts_by_policy_id():
     p2 = next(i for i, ln in enumerate(lines) if "policy: P2)" in ln)
     p10 = next(i for i, ln in enumerate(lines) if "policy: P10)" in ln)
     assert p1 < p2 < p10
+
+
+# ---------------------------------------------------------------------------
+# bump_priority
+# ---------------------------------------------------------------------------
+
+
+def test_bump_priority_rewrites_priority_in_place():
+    tasks = textwrap.dedent("""
+        # backlog
+        - [ ] **[P2] task:foo** [scan] Do the scan
+        - [ ] **[P1] task:bar** [diagnose] Look at logs
+    """).strip() + "\n"
+    out = bump_priority(tasks, slug="foo", new_priority="P0", cycle=42, policy="P1")
+    assert "- [ ] **[P0] task:foo** [scan] Do the scan" in out
+    assert "  - Pinned: cycle 42 (was P2, policy: P1)" in out
+    # Other task untouched
+    assert "- [ ] **[P1] task:bar** [diagnose] Look at logs" in out
+
+
+def test_bump_priority_is_idempotent():
+    tasks = "- [ ] **[P2] task:foo** [scan] x\n"
+    once = bump_priority(tasks, slug="foo", new_priority="P0", cycle=42, policy="P1")
+    twice = bump_priority(once, slug="foo", new_priority="P0", cycle=42, policy="P1")
+    assert once == twice
+    assert twice.count("Pinned:") == 1
+
+
+def test_bump_priority_supports_demotion():
+    tasks = "- [ ] **[P0] task:foo** [scan] x\n"
+    out = bump_priority(tasks, slug="foo", new_priority="P2", cycle=99, policy="P3")
+    assert "**[P2] task:foo**" in out
+    assert "Pinned: cycle 99 (was P0, policy: P3)" in out
+
+
+def test_bump_priority_no_match_returns_input_unchanged():
+    tasks = "- [ ] **[P2] task:foo** [scan] x\n"
+    out = bump_priority(tasks, slug="missing", new_priority="P0", cycle=1)
+    assert out == tasks
+
+
+def test_bump_priority_does_not_touch_closed_tasks():
+    tasks = "- [x] **[P2] task:foo** [scan] done\n"
+    out = bump_priority(tasks, slug="foo", new_priority="P0", cycle=1)
+    assert out == tasks
+
+
+def test_bump_priority_omits_policy_when_blank():
+    tasks = "- [ ] **[P2] task:foo** [scan] x\n"
+    out = bump_priority(tasks, slug="foo", new_priority="P0", cycle=7)
+    assert "Pinned: cycle 7 (was P2)" in out
+    assert "policy" not in out
+
+
+def test_bump_priority_dedups_existing_lineage_bullet():
+    tasks = textwrap.dedent("""
+        - [ ] **[P0] task:foo** [scan] x
+          - Pinned: cycle 5 (was P2, policy: P1)
+    """).strip() + "\n"
+    # Calling with new_priority equal to current is a no-op (idempotent on level).
+    out = bump_priority(tasks, slug="foo", new_priority="P0", cycle=5, policy="P1")
+    assert out == tasks

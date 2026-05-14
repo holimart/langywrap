@@ -595,49 +595,40 @@ class TestDryRun:
         result = loop.dry_run()
         assert result["quality_gate"] is None
 
-    def test_reports_invalid_future_periodic_task_template(self, tmp_path):
+    def test_reports_invalid_candidate_source_task_type(self, tmp_path):
+        # Synthetic candidates use the marker as the task_type slug. A
+        # marker containing spaces or punctuation can't be a valid
+        # task_type, so the audit must flag it before the loop starts.
         loop = _make_loop(
             tmp_path,
             budget=5,
             hygiene_every_n=None,
             periodic_tasks=[
-                {
-                    "every": 3,
-                    "marker": "lookback",
-                    "template": "- [ ] **[P2] Process lookback — cycle {cycle}**",
-                }
+                {"every": 3, "marker": "Not A Valid Slug"},
             ],
         )
         result = loop.dry_run()
         assert result["task_injection_errors"]
-        assert "cycle 3 periodic `lookback`" in result["task_injection_errors"][0]
+        assert "Not A Valid Slug" in result["task_injection_errors"][0]
 
-    def test_accepts_valid_future_task_templates(self, tmp_path):
+    def test_accepts_valid_candidate_sources(self, tmp_path):
         loop = _make_loop(
             tmp_path,
             budget=5,
             periodic_tasks=[
-                {
-                    "every": 3,
-                    "marker": "lookback",
-                    "template": "- [ ] **[P2] task:lookback-cycle-{cycle}** [lookback] Process lookback",
-                }
+                {"every": 3, "marker": "lookback"},
             ],
         )
         result = loop.dry_run()
         assert result["task_injection_errors"] == []
 
-    def test_run_preflight_rejects_invalid_future_injection(self, tmp_path, monkeypatch):
+    def test_run_preflight_rejects_invalid_candidate_source(self, tmp_path, monkeypatch):
         loop = _make_loop(
             tmp_path,
             budget=5,
             hygiene_every_n=None,
             periodic_tasks=[
-                {
-                    "every": 3,
-                    "marker": "lookback",
-                    "template": "- [ ] **[P2] Process lookback — cycle {cycle}**",
-                }
+                {"every": 3, "marker": "Bad Slug"},
             ],
         )
         monkeypatch.setattr(loop, "_verify_tool_discovery", lambda: {})

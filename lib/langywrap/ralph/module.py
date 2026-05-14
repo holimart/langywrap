@@ -690,8 +690,7 @@ class ModuleRunner:
         if injection_errors:
             joined = "\n".join(f"  - {err}" for err in injection_errors)
             raise RuntimeError(
-                "Task injection preflight found invalid configured task template(s):\n"
-                f"{joined}"
+                f"Task injection preflight found invalid configured task template(s):\n{joined}"
             )
 
         for cycle_num in range(start, end + 1):
@@ -706,38 +705,10 @@ class ModuleRunner:
             self._log(f"Cycle {cycle_num}/{end}  ({pending} pending)")
             self._log(f"{'=' * 60}")
 
-            # Hygiene injection
-            if (
-                self.module.hygiene_every is not None
-                and self.module.hygiene_every > 0
-                and cycle_num % self.module.hygiene_every == 0
-            ):
-                gate_cmd = self.module.gates[0] if self.module.gates else ""
-                injected = self.state.inject_hygiene_task(
-                    cycle_num,
-                    quality_gate_cmd=gate_cmd,
-                )
-                if injected:
-                    self._log(f"  [hygiene] Injected for cycle {cycle_num}")
-
-            # Periodic task injections
-            for pt in self._periodic:
-                every = pt.get("every", 0)
-                if every and cycle_num % every == 0:
-                    marker = pt.get("marker", "periodic")
-                    template = pt.get("template", "")
-                    if template:
-                        rendered = template.format(
-                            cycle=cycle_num,
-                            date=date.today().isoformat(),
-                        )
-                        injected = self.state.inject_periodic_task(
-                            cycle_num,
-                            marker=marker,
-                            content=rendered,
-                        )
-                        if injected:
-                            self._log(f"  [{marker}] Injected for cycle {cycle_num}")
+            # Hygiene + periodic synthetic candidates are emitted by
+            # inline_orient at selection time, sourced from progress.md
+            # history. They are never persisted into tasks.md.
+            # See: lib/langywrap/ralph/candidate_sources.py.
 
             # Run cycle
             result = self._run_cycle(cycle_num)

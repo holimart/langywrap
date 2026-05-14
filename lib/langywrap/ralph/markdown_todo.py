@@ -474,6 +474,100 @@ def _find_pin_insertion_point(lines: list[str]) -> int:
     return len(lines)
 
 
+_PIN_BULLET_RE = re.compile(
+    r"^\s+- Pinned:\s*cycle\s+(\d+)\s*\(was\s+(P\d+)(?:,\s*policy:\s*(P\d+))?\)\s*$"
+)
+
+
+def bump_priority(
+    tasks_text: str,
+    *,
+    slug: str,
+    new_priority: str,
+    cycle: int,
+    policy: str = "",
+) -> str:
+    """Rewrite the priority token on ``- [ ] **[Pn] task:slug**`` in-place.
+
+    Replaces the auto-pin "insert a new P0 row" pattern with a small,
+    targeted edit on the row that already exists. The original row's
+    other content (task_type, label) is untouched.
+
+    Semantics:
+    - **Idempotent.** If the row already shows ``new_priority``, nothing
+      is written. Safe to call every cycle.
+    - **Lineage is appended once.** A sub-bullet
+      ``  - Pinned: cycle N (was Pn, policy: Pm)`` is inserted directly
+      after the bumped row the first time the priority changes. Existing
+      pin sub-bullets for the same slug are not duplicated.
+    - **Demotion supported.** Pass a lower priority to demote — the
+      function does not enforce direction. Callers express intent.
+    - **No-op when slug is absent.** Returns the input unchanged. Callers
+      that need to warn must check themselves (parse first).
+
+    The function never appends new rows, never touches operator-written
+    lines that don't match the target slug, and never edits closed
+    (``- [x] ...``) tasks. Slug match is exact and case-sensitive.
+    """
+    if not slug:
+        return tasks_text
+    # Match the target row regardless of current priority value.
+    row_re = re.compile(
+        rf"^(- \[ \]\s+\*\*\[)(P\d)(\]\s+task:{re.escape(slug)}\*\*)(.*)$"
+    )
+    keepends_lines = tasks_text.splitlines(keepends=True)
+    out_lines: list[str] = []
+    i = 0
+    while i < len(keepends_lines):
+        line = keepends_lines[i]
+        line_no_nl = line.rstrip("\n")
+        m = row_re.match(line_no_nl)
+        if not m:
+            out_lines.append(line)
+            i += 1
+            continue
+
+        old_priority = m.group(2)
+        if old_priority == new_priority:
+            # Already at the desired level; preserve existing lineage bullets.
+            out_lines.append(line)
+            i += 1
+            continue
+
+        # Rewrite priority token.
+        suffix = "\n" if line.endswith("\n") else ""
+        rewritten = f"{m.group(1)}{new_priority}{m.group(3)}{m.group(4)}{suffix}"
+        out_lines.append(rewritten)
+
+        # Insert lineage bullet — but only if there isn't already a
+        # Pinned bullet for the same (cycle, policy) directly below.
+        bullet_text = f"  - Pinned: cycle {cycle} (was {old_priority}"
+        if policy:
+            bullet_text += f", policy: {policy}"
+        bullet_text += ")"
+        already_present = False
+        j = i + 1
+        while j < len(keepends_lines):
+            nxt = keepends_lines[j].rstrip("\n")
+            mb = _PIN_BULLET_RE.match(nxt)
+            if mb is None:
+                break
+            if (
+                int(mb.group(1)) == cycle
+                and mb.group(2) == old_priority
+                and (mb.group(3) or "") == policy
+            ):
+                already_present = True
+                break
+            j += 1
+
+        if not already_present:
+            out_lines.append(bullet_text + "\n")
+
+        i += 1
+    return "".join(out_lines)
+
+
 __all__ = [
     "AUTO_PIN_RE",
     "AutoPin",
@@ -486,6 +580,7 @@ __all__ = [
     "TASK_TYPE_BODY_RE",
     "UNIFIED_TASK_LINE_RE",
     "apply_auto_pins",
+    "bump_priority",
     "dedupe_cycles",
     "find_first_open_task",
     "parse_auto_pin_lines",

@@ -511,6 +511,15 @@ class Periodic(BaseModel):
     marker: str = ""
     """Dedup marker for periodic task injection. Defaults to builtin or step name."""
 
+    label: str = ""
+    """Operator-facing label rendered into the synthetic task. Empty → a
+    generic default (``Periodic <marker> — cycle N``)."""
+
+    escalation_every: int = 0
+    """Cycles of extra wait per priority bump for the synthetic candidate.
+    0 → use ``every`` (one bump per ``every`` extra cycles). Negative →
+    disable escalation entirely."""
+
 
 # ---------------------------------------------------------------------------
 # Throttle
@@ -737,7 +746,8 @@ class Pipeline(BaseModel):
                     {
                         "every": p.every,
                         "marker": marker,
-                        "template": p.template,
+                        "label": p.label,
+                        "escalation_every": p.escalation_every,
                     }
                 )
             elif p.step:
@@ -759,16 +769,22 @@ class Pipeline(BaseModel):
                         {
                             "every": p.every,
                             "marker": p.marker or p.step.name,
-                            "template": p.template,
+                            "label": p.label,
+                            "escalation_every": p.escalation_every,
                         }
                     )
-            elif p.template:
-                # Template-only periodic (like lookback without builtin flag)
+            elif p.template or p.label:
+                # Template-only periodic (like lookback without builtin flag).
+                # ``template`` is preserved for backwards-compat but is no
+                # longer rendered into tasks.md — the synthetic-candidate
+                # path supersedes the old injection model. Operators who
+                # want a friendly task label should set ``label=`` directly.
                 periodic_tasks.append(
                     {
                         "every": p.every,
                         "marker": p.marker or "periodic",
-                        "template": p.template,
+                        "label": p.label,
+                        "escalation_every": p.escalation_every,
                     }
                 )
 
@@ -1049,8 +1065,7 @@ class Pipeline(BaseModel):
             allow_legacy_format=step.allow_legacy_format,
             preflight_lint=step.preflight_lint,
             append_guards=[
-                g.model_dump() if isinstance(g, BaseModel) else dict(g)
-                for g in step.append_guards
+                g.model_dump() if isinstance(g, BaseModel) else dict(g) for g in step.append_guards
             ],
         )
 
