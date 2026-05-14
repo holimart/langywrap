@@ -69,8 +69,10 @@ fmt:
 typecheck:
     uv run mypy lib/langywrap/
 
-# Fix: lint-fix + fmt
-fix: lint-fix fmt
+# Fix: lint-fix + fmt, then run check so remaining (mypy/test) errors surface.
+# Mypy has no general autofixer — `fix` autofixes lint+format and then
+# reports whatever check still flags; non-zero exit if anything remains.
+fix: lint-fix fmt check
 
 # Validate: lint + typecheck
 validate: lint typecheck
@@ -78,8 +80,8 @@ validate: lint typecheck
 # Check: lint + typecheck + test
 check: lint typecheck test
 
-# Dev: fix + check (full local cycle)
-dev: fix check
+# Dev alias — kept for muscle memory. Equivalent to `fix`.
+dev: fix
 
 # =============================================================================
 # Environment
