@@ -10,7 +10,8 @@ from typing import Any
 def _read_json(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
-    return json.loads(path.read_text(encoding="utf-8"))
+    data: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
+    return data
 
 
 def _write_json(path: Path, data: dict[str, Any]) -> None:

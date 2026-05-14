@@ -298,7 +298,8 @@ def _resolve_api_key(source: str | None) -> str | None:
     if p.exists() and p.is_file():
         try:
             data = json.loads(p.read_text())
-            return data.get("api_key") or data.get("apiKey")
+            key = data.get("api_key") or data.get("apiKey")
+            return str(key) if key is not None else None
         except (json.JSONDecodeError, OSError):
             pass
     # Treat as env var name
@@ -1058,7 +1059,7 @@ def _extract_text_from_stream_json(raw: bytes) -> str:
         except (json.JSONDecodeError, ValueError):
             continue
         if obj.get("type") == "result" and "result" in obj:
-            return obj["result"]
+            return str(obj["result"])
 
     # Pass 2: concatenate assistant message text blocks
     parts: list[str] = []
@@ -2056,15 +2057,16 @@ def create_backend(
     | ThinkingLoopBackend
 ):
     """Instantiate the correct backend class from a BackendConfig."""
-    mapping = {
-        Backend.CLAUDE: ClaudeBackend,
-        Backend.OPENCODE: OpenCodeBackend,
-        Backend.OPENROUTER: OpenRouterBackend,
-        Backend.DIRECT_API: DirectAPIBackend,
-        Backend.MOCK: MockBackend,
-        Backend.THINKING_LOOP: ThinkingLoopBackend,
-    }
-    cls = mapping.get(config.type)
-    if cls is None:
-        raise ValueError(f"Unknown backend type: {config.type}")
-    return cls(config)
+    if config.type is Backend.CLAUDE:
+        return ClaudeBackend(config)
+    if config.type is Backend.OPENCODE:
+        return OpenCodeBackend(config)
+    if config.type is Backend.OPENROUTER:
+        return OpenRouterBackend(config)
+    if config.type is Backend.DIRECT_API:
+        return DirectAPIBackend(config)
+    if config.type is Backend.MOCK:
+        return MockBackend(config)
+    if config.type is Backend.THINKING_LOOP:
+        return ThinkingLoopBackend(config)
+    raise ValueError(f"Unknown backend type: {config.type}")

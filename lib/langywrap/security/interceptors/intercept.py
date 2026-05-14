@@ -164,7 +164,7 @@ def needs_confirmation(command: str) -> tuple[bool, str]:
 
     return False, ""
 
-def log_command(command: str, status: str):
+def log_command(command: str, status: str) -> None:
     """Log command to file."""
     try:
         log_file = os.path.expanduser("~/.claude-intercept.log")
@@ -178,7 +178,7 @@ def log_command(command: str, status: str):
 # MAIN
 # ============================================
 
-def main():
+def main() -> None:
     if len(sys.argv) < 2:
         print("Usage: intercept.py [--exec] <command>", file=sys.stderr)
         sys.exit(1)

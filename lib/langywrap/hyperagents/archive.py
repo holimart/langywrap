@@ -34,7 +34,8 @@ class AgentVariant(BaseModel):
     def to_yaml(self) -> str:
         data = self.model_dump()
         data["created_at"] = data["created_at"].isoformat()
-        return yaml.dump(data, default_flow_style=False, sort_keys=False)
+        text: str = yaml.dump(data, default_flow_style=False, sort_keys=False)
+        return text
 
     @classmethod
     def from_yaml(cls, text: str) -> AgentVariant:

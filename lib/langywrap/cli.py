@@ -10,9 +10,12 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import click
+
+if TYPE_CHECKING:
+    from langywrap.router import ExecutionRouter
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -381,7 +384,7 @@ def compound_search(query: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _build_router(project_dir: Path, ralph_cfg: Any | None = None) -> ExecutionRouter:  # noqa: F821
+def _build_router(project_dir: Path, ralph_cfg: Any | None = None) -> ExecutionRouter:
     """Build an ExecutionRouter from project config, wiring backends + execwrap.
 
     Discovers:

@@ -16,7 +16,13 @@ from langywrap.helpers.process import run_subprocess
 try:
     from langywrap.router.backends import wrap_cmd
 except ImportError:  # defensive — backends may not always be available
-    def wrap_cmd(cmd, execwrap_path=None, rtk_path=None, *, shell_mode=False):  # type: ignore[misc]
+    def wrap_cmd(  # type: ignore[misc]
+        cmd: list[str],
+        execwrap_path: Path | None = None,
+        rtk_path: Path | None = None,
+        *,
+        shell_mode: bool = False,
+    ) -> list[str]:
         return cmd
 
 

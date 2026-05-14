@@ -26,6 +26,21 @@ from langywrap.ralph.config import (
 )
 
 
+def _default_secret_patterns() -> list[str]:
+    """Defaults mirrored from RalphConfig.secret_patterns; kept here so the v2
+    builder doesn't need to call into pydantic's model_fields machinery."""
+    return [
+        r"\.env$",
+        r"credentials",
+        r"secret",
+        r"\.pem$",
+        r"\.key$",
+        r"password",
+        r"api_key",
+        r"AUTH_TOKEN",
+    ]
+
+
 def _resolve_model(name: str, extra: dict[str, str] | None = None) -> str:
     """Expand short aliases to full model IDs.
 
@@ -222,7 +237,7 @@ def _parse_gates(raw: Any) -> tuple[QualityGateConfig | None, list[QualityGateCo
                         timeout = int(timeout[:-1])
                     gates.append(QualityGateConfig(
                         command=item["command"],
-                        timeout_minutes=int(timeout),
+                        timeout_minutes=int(timeout or 10),
                         required=item.get("required", True),
                     ))
                 else:
@@ -440,11 +455,7 @@ def load_v2(raw: dict, project_dir: Path) -> RalphConfig:
         git_push_after_commit=git_push,
         git_add_paths=git_paths,
         scope_restriction=raw.get("scope", ""),
-        secret_patterns=(
-            secret_patterns
-            if secret_patterns
-            else RalphConfig.model_fields["secret_patterns"].default_factory()  # type: ignore[union-attr]
-        ),
+        secret_patterns=secret_patterns or _default_secret_patterns(),
         verbose=raw.get("verbose", True),
         max_hang_retries=raw.get("max_hang_retries", 2),
         throttle_utc_start=throttle_start,

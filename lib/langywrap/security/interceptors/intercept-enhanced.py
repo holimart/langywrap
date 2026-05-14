@@ -13,6 +13,7 @@ import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -43,7 +44,8 @@ def load_permissions_config() -> dict:
 
     if config_file:
         with open(config_file) as f:
-            return yaml.safe_load(f)
+            data: dict[Any, Any] = yaml.safe_load(f)
+            return data
 
     # Fallback to minimal default
     return {
@@ -112,7 +114,7 @@ def format_message(template: str, context: dict) -> str:
     except KeyError:
         return template
 
-def print_block_message(rule: dict, command: str):
+def print_block_message(rule: dict, command: str) -> None:
     """Print helpful block message"""
     print("\n" + "="*70, file=sys.stderr)
 
@@ -173,7 +175,7 @@ def print_ask_message(rule: dict, command: str) -> bool:
 # LOGGING
 # ============================================================================
 
-def log_command(command: str, status: str, reason: str = ""):
+def log_command(command: str, status: str, reason: str = "") -> None:
     """Log command execution"""
     log_dir = Path.home() / ".llmsec" / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -193,7 +195,7 @@ def log_command(command: str, status: str, reason: str = ""):
 # MAIN LOGIC
 # ============================================================================
 
-def main():
+def main() -> None:
     if len(sys.argv) < 2:
         print("Usage: intercept-enhanced.py [--exec] <command>", file=sys.stderr)
         sys.exit(1)

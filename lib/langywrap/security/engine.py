@@ -12,9 +12,11 @@ just loads in the correct order.
 from __future__ import annotations
 
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
+from typing import Any
 
 from .audit import AuditLogger
 from .permissions import (
@@ -135,7 +137,9 @@ class SecurityEngine:
     # Core check logic
     # ------------------------------------------------------------------
 
-    def _find_rule(self, command: str, rules: list) -> PermissionRule | None:
+    def _find_rule(
+        self, command: str, rules: list[PermissionRule]
+    ) -> PermissionRule | None:
         for rule in rules:
             if match_pattern(command, rule.pattern):
                 return rule
@@ -195,7 +199,7 @@ class SecurityEngine:
             decision = PermissionDecision.ALLOW,
             rule     = allow_rule,
             message  = (
-                allow_rule.reason
+                (allow_rule.reason or "Allowed by rule")
                 if allow_rule
                 else "No matching deny/ask rule — allowed by default"
             ),
@@ -216,9 +220,9 @@ class SecurityEngine:
     def check_and_exec(
         self,
         command: str,
-        confirm_callback=None,
-        **subprocess_kwargs,
-    ) -> subprocess.CompletedProcess:
+        confirm_callback: Callable[[SecurityResult], bool] | None = None,
+        **subprocess_kwargs: Any,
+    ) -> subprocess.CompletedProcess[Any]:
         """
         Check the command and, if permitted, execute it.
 
@@ -280,7 +284,7 @@ class SecurityEngine:
                 )
 
         # Execute
-        kwargs = {"shell": True}
+        kwargs: dict[str, Any] = {"shell": True}
         kwargs.update(subprocess_kwargs)
         return subprocess.run(command, **kwargs)
 

@@ -40,6 +40,7 @@ from collections import Counter
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from pydantic import BaseModel
 
@@ -389,7 +390,7 @@ def _parse_csv_list(s: str) -> tuple[str, ...]:
 
 
 def _build_config(args: argparse.Namespace) -> LintConfig:
-    kwargs: dict[str, object] = {}
+    kwargs: dict[str, Any] = {}
     if args.task_types:
         kwargs["allowed_task_types"] = _parse_csv_list(args.task_types)
     if args.priorities:

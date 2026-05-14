@@ -595,7 +595,8 @@ def load_ralph_config(project_dir: Path) -> RalphConfig:
 
     pipeline = load_pipeline_config(project_dir)
     if pipeline is not None:
-        return pipeline.to_ralph_config(project_dir)
+        config: RalphConfig = pipeline.to_ralph_config(project_dir)
+        return config
 
     cfg_path: Path | None = None
     for candidate in _CONFIG_PATHS:

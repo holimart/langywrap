@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from langywrap.ralph.state import RalphState
@@ -286,7 +286,7 @@ def check_graphify_health(
     project_dir: Path,
     step_enrichments: list[list[str]],
     post_cycle_commands: list[str],
-) -> dict[str, object]:
+) -> dict[str, Any]:
     """Preflight report for Graphify/Textify usage in a ralph pipeline.
 
     Returns a dict with these keys:

@@ -60,8 +60,8 @@ class AuditLogger:
     def log_event(
         self,
         command: str,
-        decision,           # PermissionDecision enum or str
-        rule=None,          # Optional[PermissionRule]
+        decision: Any,            # PermissionDecision enum or str
+        rule: Any = None,         # Optional[PermissionRule]
         project: str | None = None,
         extra: dict[str, Any] | None = None,
     ) -> None:
@@ -135,8 +135,8 @@ class AuditLogger:
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _decision_str(decision) -> str:
+def _decision_str(decision: Any) -> str:
     """Normalise PermissionDecision enum or plain string to uppercase string."""
     if hasattr(decision, "value"):
-        return decision.value.upper()
+        return str(decision.value).upper()
     return str(decision).upper()

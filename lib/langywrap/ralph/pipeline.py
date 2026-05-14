@@ -34,9 +34,12 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
+
+if TYPE_CHECKING:
+    from langywrap.ralph.config import RalphConfig, StepConfig
 
 # ---------------------------------------------------------------------------
 # Model alias resolution (shared with config_v2)
@@ -640,7 +643,7 @@ class Pipeline(BaseModel):
     # Conversion to RalphConfig (bridge to runner)
     # -----------------------------------------------------------------------
 
-    def to_ralph_config(self, project_dir: Path) -> RalphConfig:  # noqa: F821
+    def to_ralph_config(self, project_dir: Path) -> RalphConfig:
         """Convert this Pipeline to a RalphConfig for the runner.
 
         This is the bridge: Python pipeline → internal config objects.
@@ -649,7 +652,6 @@ class Pipeline(BaseModel):
         from langywrap.ralph.config import (
             QualityGateConfig,
             RalphConfig,
-            StepConfig,
         )
 
         project_dir = project_dir.resolve()
@@ -956,7 +958,7 @@ class Pipeline(BaseModel):
     # Internal helpers
     # -----------------------------------------------------------------------
 
-    def _step_to_step_config(self, step: Step, prompts_dir: Path) -> StepConfig:  # noqa: F821
+    def _step_to_step_config(self, step: Step, prompts_dir: Path) -> StepConfig:
         """Convert a Step to a StepConfig."""
         from langywrap.ralph.config import StepConfig
 
@@ -1052,7 +1054,7 @@ class Pipeline(BaseModel):
             ],
         )
 
-    def _loop_to_step_configs(self, loop: Loop, prompts_dir: Path) -> list[StepConfig]:  # noqa: F821
+    def _loop_to_step_configs(self, loop: Loop, prompts_dir: Path) -> list[StepConfig]:
         """Convert a Loop to StepConfig list.
 
         The loop's inner steps become regular pipeline steps. The loop's

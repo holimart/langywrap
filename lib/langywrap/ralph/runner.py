@@ -45,12 +45,18 @@ log = logging.getLogger(__name__)
 
 try:
     from langywrap.router import ExecutionRouter  # type: ignore[import]
-    from langywrap.router.router import _infer_backend_from_model  # type: ignore[import]
+    from langywrap.router.router import (  # type: ignore[import]
+        _infer_backend_from_model as _infer_backend_from_model_impl,
+    )
 except ImportError:
     ExecutionRouter = None  # type: ignore[assignment,misc]
+    _infer_backend_from_model_impl = None  # type: ignore[assignment]
 
-    def _infer_backend_from_model(model: str) -> Any:  # type: ignore[no-redef]
+
+def _infer_backend_from_model(model: str) -> Any:
+    if _infer_backend_from_model_impl is None:
         raise LookupError("router not available")
+    return _infer_backend_from_model_impl(model)
 
 
 # ---------------------------------------------------------------------------
@@ -1125,7 +1131,7 @@ class RalphLoop:
 
         # Check step templates
         for step in self.config.steps:
-            entry = {
+            entry: dict[str, Any] = {
                 "name": step.name,
                 "builtin": step.builtin,
                 "template": str(step.prompt_template),
@@ -1181,7 +1187,7 @@ class RalphLoop:
                 effective_backend_enum = _resolve_engine_backend(
                     step.engine
                 ) or _infer_backend_from_model(effective_model)
-                entry: dict[str, Any] = {
+                entry = {
                     "step": step.name,
                     "model": effective_model,
                     "backend": effective_backend_enum.value,
@@ -1699,7 +1705,8 @@ class RalphLoop:
             if step.engine and step.engine != "auto":
                 return step.engine
             if step.model:
-                return _infer_backend_from_model(step.model).value
+                backend = _infer_backend_from_model(step.model)
+                return str(backend.value)
             break
 
         return ""
