@@ -15,6 +15,7 @@ from enum import StrEnum
 from pathlib import Path
 
 from langywrap.ralph.markdown_todo import CHECKBOX_PREFIX_RE, UNIFIED_TASK_LINE_RE
+from langywrap.ralph.progress_dedupe import merge_or_append
 
 # ---------------------------------------------------------------------------
 # Enums
@@ -313,39 +314,58 @@ class RalphState:
     def append_progress(
         self, cycle_result: CycleResult, task_id: str = "", summary: str = ""
     ) -> None:
-        """Append a cycle entry to progress.md."""
+        """Record a cycle entry in progress.md.
+
+        If the LLM finalize step already wrote a `## Cycle N` narrative
+        block for this cycle, the skeletal confirmation/metric lines are
+        merged into that block (deduped on metric key). Otherwise a fresh
+        block is appended at the end of the file. Either way the file
+        contains exactly one block per cycle number — no more dual-writer
+        duplication.
+        """
         date_str = datetime.now().strftime("%Y-%m-%d")
-        entry_lines: list[str] = [
-            f"\n## Cycle {cycle_result.cycle_number} — {date_str}",
-        ]
+        # When appending a fresh block (no LLM narrative yet), the first
+        # line is the header; when merging into an existing block, we
+        # only contribute the metric lines.
+        header = f"## Cycle {cycle_result.cycle_number} — {date_str}"
+
+        skeletal: list[str] = []
         if task_id:
-            entry_lines.append(f"Task: {task_id}")
+            skeletal.append(f"Task: {task_id}")
 
         outcome = self._derive_outcome(cycle_result)
-        entry_lines.append(f"Outcome: {outcome}")
+        skeletal.append(f"Outcome: {outcome}")
 
         if cycle_result.confirmed_tokens:
-            entry_lines.append("\n### Confirmation Chain")
+            skeletal.append("### Confirmation Chain")
             for step, confirmed in cycle_result.confirmed_tokens.items():
-                entry_lines.append(f"- {step.upper()}_CONFIRMED: {'yes' if confirmed else 'NO'}")
+                skeletal.append(f"- {step.upper()}_CONFIRMED: {'yes' if confirmed else 'NO'}")
 
         if cycle_result.quality_gate_passed is not None:
             qg = "PASS" if cycle_result.quality_gate_passed else "FAIL"
-            entry_lines.append(f"\nQuality gate: {qg}")
+            skeletal.append(f"Quality gate: {qg}")
 
         if cycle_result.git_commit_hash:
-            entry_lines.append(f"Git commit: {cycle_result.git_commit_hash}")
+            skeletal.append(f"Git commit: {cycle_result.git_commit_hash}")
 
-        entry_lines.append(f"Duration: {cycle_result.duration_seconds:.1f}s")
+        skeletal.append(f"Duration: {cycle_result.duration_seconds:.1f}s")
 
         if summary:
-            entry_lines.append(f"\n### Summary\n{summary}")
+            skeletal.append(f"### Summary {summary}")
 
-        entry_lines.append("")
+        if self.progress_file.exists():
+            current = self.progress_file.read_text(encoding="utf-8")
+        else:
+            current = ""
 
-        text = "\n".join(entry_lines) + "\n"
-        with self.progress_file.open("a", encoding="utf-8") as fh:
-            fh.write(text)
+        # When no narrative block exists, the merge layer needs the
+        # header too — include it as the first item.
+        new_text = merge_or_append(
+            current, cycle_result.cycle_number, [header, *skeletal]
+        )
+        if not new_text.endswith("\n"):
+            new_text += "\n"
+        self.progress_file.write_text(new_text, encoding="utf-8")
 
     # ------------------------------------------------------------------
     # Hygiene task injection
