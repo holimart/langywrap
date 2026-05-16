@@ -181,6 +181,11 @@ class StepConfig(BaseModel):
     Pydantic re-validates into ``AppendGuard`` objects at dispatch time.
     Reject steps that shrink an append-only file like progress.md."""
 
+    fallback_task: dict | None = None
+    """For ``builtin='inline_orient'``: ``{task_type, slug, label, priority}``
+    synthesised when the eligible set is empty instead of hard-failing.
+    ``None`` keeps the legacy raise-on-empty behaviour."""
+
 
 # ---------------------------------------------------------------------------
 # QualityGateConfig
@@ -444,6 +449,22 @@ def substitute_model_name(model: str, substitutions: list[ModelSubstitution]) ->
     return model
 
 
+def _is_anthropic_model(model: str) -> bool:
+    """Return True when model is a Claude/Anthropic model (after alias resolution)."""
+    return model.startswith("claude-") or model.startswith("anthropic/")
+
+
+def _engine_for_substitution(step: StepConfig, new_model: str) -> str:
+    """Return the engine to use after a model substitution.
+
+    When opencode steps are substituted to a Claude model, switch to the
+    claude engine — opencode does not accept bare ``claude-*`` model IDs.
+    """
+    if step.engine == "opencode" and _is_anthropic_model(new_model):
+        return "claude"
+    return step.engine
+
+
 def apply_model_substitutions(
     config: RalphConfig,
     substitutions: list[ModelSubstitution],
@@ -454,12 +475,14 @@ def apply_model_substitutions(
 
     steps: list[StepConfig] = []
     for step in config.steps:
+        new_model = substitute_model_name(step.model, substitutions)
         updates: dict[str, Any] = {
-            "model": substitute_model_name(step.model, substitutions),
+            "model": new_model,
             "retry_model": substitute_model_name(step.retry_model, substitutions),
             "retry_models": [
                 substitute_model_name(model, substitutions) for model in step.retry_models
             ],
+            "engine": _engine_for_substitution(step, new_model),
         }
         steps.append(step.model_copy(update=updates))
 
