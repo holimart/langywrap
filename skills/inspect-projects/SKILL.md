@@ -114,6 +114,60 @@ Report if the remote sibling `langywrap` is missing, dirty, on a different HEAD,
 or otherwise likely to be running older Ralph/helper code. Do not pull, push,
 reset, or edit the remote sibling unless explicitly asked.
 
+## Langywrap Fix → Push → Remote Pull → Restart Workflow
+
+When a bug in langywrap itself causes loops to fail fleet-wide (e.g. an engine
+mismatch, a config parsing error, a runner regression), the repair cycle is:
+
+1. **Stop affected loops** — send `C-c` to each tmux pane before editing code.
+   For remote loops: `ssh user@host 'tmux send-keys -t ralph-project C-c'`.
+   Stop all affected projects before patching so none restarts mid-fix.
+
+2. **Fix and verify locally** — edit the langywrap library, run `./just check`
+   (lint + typecheck + 874 tests). Do not skip this step even for small patches.
+
+3. **Commit and push**:
+
+   ```bash
+   git add <changed files>
+   git commit -m "fix(ralph): ..."
+   git push
+   ```
+
+4. **Pull on every remote host** that runs affected projects:
+
+   ```bash
+   ssh user@host 'cd /path/to/langywrap && git pull'
+   ```
+
+   Confirm the pull output shows the fix commit. A fast-forward with no output
+   means the remote was already up to date — double-check the remote HEAD.
+
+5. **Restart all affected loops** with the same `--replace-model` flags as
+   before (substitutions are not persisted; they must be re-supplied on each
+   `langywrap ralph run` invocation).
+
+6. **Verify** with `--status-only --model-details` for each project. Look for
+   `running` tmux state and the expected `anth X%/oa Y%/oth Z%` distribution.
+
+### Engine auto-flip: opencode → claude on Anthropic substitution
+
+As of 2026-05-16, `apply_model_substitutions` in `langywrap.ralph.config`
+automatically switches the engine from `opencode` to `claude` when a model
+substitution replaces a model with an Anthropic/Claude model (`claude-*` or
+`anthropic/*`). OpenCode does not accept bare `claude-*` model IDs and returns
+`Model not found: claude-sonnet-4-6/.` immediately, causing 3 consecutive failed
+cycles and a loop stop.
+
+**Symptoms of the pre-fix bug:**
+- Loop stops after exactly 3 cycles with all token counts at 0.
+- Pane log shows `Model not found: claude-sonnet-4-6/.` from opencode.
+- `--status-only` reports `done 3; confirmed 0/3` and model mix reverts to
+  original percentages (replacements not shown because loop exited).
+
+**If you hit this on an older langywrap:** pull the fix commit (`c19cacd`) on
+every host, then restart with `--replace-model` flags.
+
 ## Ralph Session Control And Resume
 
 Use this workflow when the user asks to resume paused loops across projects:
@@ -169,12 +223,25 @@ ssh user@host 'tmux send-keys -t ralph-project C-c'
 ```
 
 Model replacement syntax is `--replace-model FROM=TO`. Quote glob replacements so
-the local shell, SSH shell, and remote shell do not expand `*`. To replace Kimi
-with GPT-5.3 Codex on a remote Ralph pane:
+the local shell, SSH shell, and remote shell do not expand `*`. Substitutions are
+**not persisted** — they must be re-supplied on every `langywrap ralph run`
+invocation. When a loop stops and you restart it, always include the same flags.
+
+Typical fleet-wide replacement (replace all gpt and kimi slots with Sonnet):
 
 ```bash
-ssh user@host 'tmux send-keys -t ralph-project "cd /path/to/project && langywrap ralph run --resume --budget 50 --replace-model \*kimi\*=openai/gpt-5.3-codex ." C-m'
+# local
+tmux send-keys -t ralph-project "cd /path/to/project && langywrap ralph run --resume --budget 50 --replace-model '*gpt*=claude-sonnet-4-6' --replace-model '*kimi*=claude-sonnet-4-6' ." C-m
+
+# remote — use \* inside the double-quoted pane command
+ssh user@host 'tmux send-keys -t ralph-project "cd /path/to/project && langywrap ralph run --resume --budget 50 --replace-model \*gpt\*=claude-sonnet-4-6 --replace-model \*kimi\*=claude-sonnet-4-6 ." C-m'
 ```
+
+When substituting to a Claude model on a step that was `engine="opencode"`,
+langywrap automatically switches the engine to `claude` (fix landed 2026-05-16,
+commit `c19cacd`). If running an older langywrap, stop all loops, pull the fix on
+every host, then restart — see the **Langywrap Fix → Push → Remote Pull →
+Restart Workflow** section above.
 
 Verify the resume after sending commands:
 
@@ -183,8 +250,8 @@ scripts/inspect-projects/inspect_projects.py --status-only --model-details
 ```
 
 For model substitutions, confirmation is a `replacements:` line in model details
-and provider percentages changing as expected, such as `oth 0%` after replacing
-all Kimi slots.
+and provider percentages changing as expected. A fleet-wide Claude-only run shows
+`anth 100%/oa 0%/oth 0%` for every project.
 
 Common lesson: `bash: line 1: langywrap: command not found` immediately after an
 SSH `tmux send-keys` command can mean the command was quoted incorrectly and the
